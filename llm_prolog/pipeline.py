@@ -143,7 +143,7 @@ def run_pipeline(
             )
             continue
 
-        new_clause = infer_new_premise(*selected_premises)
+        new_clause = infer_new_premise(selected_premises)
         if new_clause is None:
             steps.append(
                 PipelineStep(
