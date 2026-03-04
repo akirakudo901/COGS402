@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from .llm_client import LLMClient
-from .types import Premise, format_clause
+from .llm_client.llm_client import LLMClient
+from .symbolic.types import Premise, format_clause
 
 
 SYSTEM_PROMPT = """

@@ -13,12 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from .llm_client import LLMClient
+from .llm_client.llm_client import LLMClient
 from .nl_symbol_converter import convert_problem_to_symbols
 from .selector import select_next_step
-from .inference import infer_new_premise
-from .symbol_nl_converter import symbols_to_nl
-from .types import (
+from .symbolic.inference import infer_new_premise
+from .symbolic.types import (
     AnswerSpec,
     PipelineResult,
     PipelineStep,
@@ -27,6 +26,7 @@ from .types import (
     parse_fact_or_rule,
     same_predicate_shape,
 )
+from .symbol_nl_converter import symbols_to_nl
 
 
 @dataclass
@@ -64,7 +64,7 @@ def _find_premise_by_id(premises: List[Premise], pid: int) -> Optional[Premise]:
 def _answer_matches(premise: Premise, answer_spec: AnswerSpec) -> bool:
     clause = premise.clause
     # Only facts can directly be answers for now.
-    from .types import Fact  # local import to avoid circulars
+    from .symbolic.types import Fact  # local import to avoid circulars
 
     if not isinstance(clause, Fact):
         return False

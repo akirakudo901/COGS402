@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import List
 
-from .llm_client import LLMClient
-from .types import AnswerSpec, Premise, SelectorDecision, format_clause
+from .llm_client.llm_client import LLMClient
+from .symbolic.types import AnswerSpec, Premise, SelectorDecision, format_clause
 
 
 SYSTEM_PROMPT = """

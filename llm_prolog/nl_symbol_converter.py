@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from .llm_client import LLMClient
-from .types import (
+from .llm_client.llm_client import LLMClient
+from .symbolic.types import (
     AnswerSpec,
     Premise,
     Clause,
