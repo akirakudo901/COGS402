@@ -63,14 +63,16 @@ def _extract_numeric_answer_from_fact(fact: Fact) -> Optional[int]:
 def run_single_example(example: GSM8KExample = EXAMPLE_1) -> None:
     """Run the full pipeline on a single GSM8K‑like example and print results."""
     llm = LLMClient()
-    cfg = PipelineConfig(max_steps=8, explain=True)
+    cfg = PipelineConfig(max_steps=8, explain=True, return_premises=True)
 
-    result = run_pipeline(
+    result, premises = run_pipeline(
         problem=example.problem,
         query=example.query,
         llm=llm,
         config=cfg,
     )
+
+    print("Premises:", "\n".join([f"{p!r}" for p in premises]))
 
     print("Success:", result.success)
     print("Reason:", result.reason)
@@ -100,13 +102,13 @@ def evaluate_examples(
     accuracy summary.
     """
     llm = LLMClient()
-    cfg = PipelineConfig(max_steps=max_steps, explain=False)
+    cfg = PipelineConfig(max_steps=max_steps, explain=False, return_premises=True)
 
     total = 0
     correct = 0
     for ex in examples:
         total += 1
-        result = run_pipeline(
+        result, premises = run_pipeline(
             problem=ex.problem,
             query=ex.query,
             llm=llm,

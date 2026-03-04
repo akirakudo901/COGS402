@@ -32,6 +32,7 @@ from .symbol_nl_converter import symbols_to_nl
 class PipelineConfig:
     max_steps: int = 10
     explain: bool = True
+    return_premises : bool = True # return all premises at end of pipeline?
 
 
 def _append_background_premises(
@@ -221,10 +222,14 @@ def run_pipeline(
             # Explanations are best‑effort; do not fail the pipeline if they break.
             pass
 
-    return PipelineResult(
+    result = PipelineResult(
         success=success,
         answer_premise=final_answer,
         steps=steps,
         reason=reason,
     )
 
+    if cfg.return_premises:
+        return result, premises
+    else:
+        return result
