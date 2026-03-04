@@ -151,6 +151,39 @@ def parse_predicate(text: str) -> Predicate:
     return Predicate(name=name, args=args)
 
 
+def _split_predicate_atoms(body_str: str) -> List[str]:
+    """
+    Split a rule body string into predicate substrings, ignoring commas that
+    occur inside parentheses.
+    """
+    parts: List[str] = []
+    current: List[str] = []
+    depth = 0
+
+    for ch in body_str:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            # We are lenient here; if depth would go negative we just clamp at 0.
+            if depth > 0: depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            segment = "".join(current).strip()
+            if segment:
+                parts.append(segment)
+            current = []
+        else:
+            current.append(ch)
+
+    # Add the final segment if any.
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+
+    return parts
+
+
 def parse_fact_or_rule(text: str) -> Clause:
     """
     Parse a fact or rule from a Prolog‑like string.
@@ -166,8 +199,7 @@ def parse_fact_or_rule(text: str) -> Clause:
         head_str, body_str = text.split(":-", 1)
         head = parse_predicate(head_str.strip())
         body_atoms: List[Predicate] = []
-        for atom_str in body_str.split(","):
-            atom_str = atom_str.strip()
+        for atom_str in _split_predicate_atoms(body_str):
             if not atom_str:
                 continue
             body_atoms.append(parse_predicate(atom_str))
