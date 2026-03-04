@@ -98,11 +98,7 @@ def run_pipeline(
             answer_spec=answer_spec,
             llm=client,
         )
-
-        if decision.should_stop:
-            reason = decision.stop_reason or "selector_requested_stop"
-            break
-
+        
         # Integrate any new background premises first.
         if decision.background_premises:
             premises = _append_background_premises(premises, decision.background_premises)

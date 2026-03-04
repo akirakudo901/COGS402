@@ -30,7 +30,6 @@ Your task for each step:
   current theory is insufficient.
 - State what new premise you intend for the inference engine to derive.
 - Indicate whether this new premise is directly the answer head goal.
-- Indicate whether the reasoning process should stop.
 
 Output MUST be a single JSON object with the fields:
 - "selected_premise_ids": list of integer IDs.
@@ -39,8 +38,6 @@ Output MUST be a single JSON object with the fields:
 - "background_premises": list of strings, each a fact or rule ending
   with a period.
 - "is_answer_goal": boolean.
-- "should_stop": boolean.
-- "stop_reason": string or null.
 """
 
 
@@ -98,17 +95,15 @@ def select_next_step(
     background_clean = [str(x) for x in background if isinstance(x, (str, int, float))]
 
     is_answer_goal = bool(data.get("is_answer_goal", False))
-    should_stop = bool(data.get("should_stop", False))
-    stop_reason = data.get("stop_reason")
-    if stop_reason is not None and not isinstance(stop_reason, str):
-        stop_reason = None
-
+    
+    # 'should_stop' and 'stop_reason' are filled by the pipeline once we checked the new premise 
+    # is a fact uniting with the goal predicate
     return SelectorDecision(
         selected_premise_ids=selected_ids_clean,
         proposed_new_premise=proposed,
         background_premises=background_clean,
         is_answer_goal=is_answer_goal,
-        should_stop=should_stop,
-        stop_reason=stop_reason,
+        should_stop=False,
+        stop_reason=None,
     )
 
