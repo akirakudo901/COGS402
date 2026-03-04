@@ -32,6 +32,10 @@ class Term:
     def constant(name: str) -> "Term":
         return Term(name=name, is_variable=False)
 
+    def __repr__(self) -> str:
+        return f"{self.name.capitalize() if self.is_variable 
+                  else self.name.lower()}"
+
 
 @dataclass(frozen=True)
 class Predicate:
@@ -77,12 +81,24 @@ class Premise:
     nl: Optional[str] = None
     source: Optional[str] = None
 
+    def __repr__(self) -> str:
+        parts = [f"\nclause='{self.clause}'"]
+        if self.nl is not None:
+            parts.append(f"\nnl={self.nl}")
+        if self.source is not None:
+            parts.append(f"\nsource={self.source}")
+        inner = ", ".join(parts)
+        return f"Premise_{self.id}({inner})"
+
 
 @dataclass(frozen=True)
 class AnswerSpec:
     """Target predicate/head we hope to derive."""
 
     target: Predicate
+
+    def __repr__(self) -> str:
+        return f"AnswerSpec(target={self.target})"
 
 
 @dataclass
@@ -94,6 +110,17 @@ class SelectorDecision:
     should_stop: bool
     stop_reason: Optional[str] = None
 
+    def __repr__(self) -> str:
+        return (
+            "SelectorDecision("
+            f"selected_premise_ids={self.selected_premise_ids}, "
+            f"proposed_new_premise={self.proposed_new_premise}, "
+            f"background_premises={self.background_premises}, "
+            f"is_answer_goal={self.is_answer_goal}, "
+            f"should_stop={self.should_stop}, "
+            f"stop_reason={self.stop_reason})"
+        )
+
 
 @dataclass
 class PipelineStep:
@@ -104,6 +131,19 @@ class PipelineStep:
     success: bool
     note: Optional[str] = None
 
+    def __repr__(self) -> str:
+        parts = [
+            f"step_index={self.step_index}",
+            f"used_premise_ids={self.used_premise_ids}",
+            f"new_premise_id={self.new_premise_id}",
+            f"decision={self.decision}",
+            f"success={self.success}",
+        ]
+        if self.note is not None:
+            parts.append(f"note={self.note}")
+        inner = ", ".join(parts)
+        return f"PipelineStep({inner})"
+
 
 @dataclass
 class PipelineResult:
@@ -111,6 +151,17 @@ class PipelineResult:
     answer_premise: Optional[Premise]
     steps: List[PipelineStep]
     reason: Optional[str] = None
+
+    def __repr__(self) -> str:
+        parts = [
+            f"success={self.success}",
+            f"answer_premise={self.answer_premise}",
+            f"steps={self.steps}",
+        ]
+        if self.reason is not None:
+            parts.append(f"reason={self.reason}")
+        inner = ", ".join(parts)
+        return f"PipelineResult({inner})"
 
 
 #
