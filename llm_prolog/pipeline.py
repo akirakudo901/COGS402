@@ -108,7 +108,7 @@ def run_pipeline(
                 PipelineStep(
                     step_index=step_idx,
                     used_premise_ids=decision.selected_premise_ids,
-                    new_premise_id=None,
+                    new_premise=None,
                     decision=decision,
                     success=False,
                     note="Selector did not choose two premises; skipping inference.",
@@ -131,7 +131,7 @@ def run_pipeline(
                 PipelineStep(
                     step_index=step_idx,
                     used_premise_ids=decision.selected_premise_ids,
-                    new_premise_id=None,
+                    new_premise=None,
                     decision=decision,
                     success=False,
                     note=f"Selector referenced unknown premise IDs: {missing_ids}",
@@ -145,7 +145,7 @@ def run_pipeline(
                 PipelineStep(
                     step_index=step_idx,
                     used_premise_ids=decision.selected_premise_ids,
-                    new_premise_id=None,
+                    new_premise=None,
                     decision=decision,
                     success=False,
                     note="Inference failed to derive a new clause from selected premises.",
@@ -162,15 +162,16 @@ def run_pipeline(
         )
         premises.append(new_premise)
 
-        step = PipelineStep(
-            step_index=step_idx,
-            used_premise_ids=decision.selected_premise_ids,
-            new_premise_id=new_id,
-            decision=decision,
-            success=True,
-            note=None,
+        steps.append(
+            PipelineStep(
+                step_index=step_idx,
+                used_premise_ids=decision.selected_premise_ids,
+                new_premise=new_premise,
+                decision=decision,
+                success=True,
+                note=None,
+            )
         )
-        steps.append(step)
 
         if _answer_matches(new_premise, answer_spec):
             success = True

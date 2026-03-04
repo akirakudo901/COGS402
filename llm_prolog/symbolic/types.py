@@ -126,7 +126,7 @@ class SelectorDecision:
 class PipelineStep:
     step_index: int
     used_premise_ids: List[int]
-    new_premise_id: Optional[int]
+    new_premise: Optional[Premise]
     decision: SelectorDecision
     success: bool
     note: Optional[str] = None
@@ -135,7 +135,7 @@ class PipelineStep:
         parts = [
             f"step_index={self.step_index}",
             f"used_premise_ids={self.used_premise_ids}",
-            f"new_premise_id={self.new_premise_id}",
+            f"new_premise={self.new_premise}",
             f"decision={self.decision}",
             f"success={self.success}",
         ]
