@@ -11,7 +11,7 @@ This module wires together:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import FrozenSet, List, Optional, Set, Tuple
 
 from .llm_client.llm_client import LLMClient
 from .nl_symbol_converter import convert_problem_to_symbols
@@ -89,6 +89,7 @@ def run_pipeline(
     success = False
     final_answer: Optional[Premise] = None
     reason: Optional[str] = None
+    used_premise_sets: Set[FrozenSet[int]] = set()
 
     for step_idx in range(cfg.max_steps):
         decision: SelectorDecision = select_next_step(
@@ -97,6 +98,7 @@ def run_pipeline(
             premises=premises,
             answer_spec=answer_spec,
             llm=client,
+            previous_premise_sets=[sorted(list(s)) for s in used_premise_sets],
         )
         
         # Integrate any new background premises first.
@@ -112,6 +114,21 @@ def run_pipeline(
                     decision=decision,
                     success=False,
                     note="Selector did not choose two premises; skipping inference.",
+                )
+            )
+            continue
+
+        # Detect reuse of an already‑combined set of premises (order‑insensitive).
+        selected_set = frozenset(decision.selected_premise_ids)
+        if selected_set in used_premise_sets:
+            steps.append(
+                PipelineStep(
+                    step_index=step_idx,
+                    used_premise_ids=decision.selected_premise_ids,
+                    new_premise=None,
+                    decision=decision,
+                    success=False,
+                    note="Inference step failed due to selecting premises already combined previously.",
                 )
             )
             continue
@@ -138,6 +155,9 @@ def run_pipeline(
                 )
             )
             continue
+
+        # Record that we've now attempted to combine this particular set of premises.
+        used_premise_sets.add(selected_set)
 
         new_clause = infer_new_premise(selected_premises)
         if new_clause is None:

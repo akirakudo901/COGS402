@@ -9,7 +9,7 @@ answer goal.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from .llm_client.llm_client import LLMClient
 from .symbolic.types import AnswerSpec, Premise, SelectorDecision, format_clause
@@ -22,6 +22,7 @@ You are given:
 - A general natural language problem and its question.
 - A list of existing premises (facts and rules) with IDs.
 - A target answer head predicate we ultimately want to prove.
+‑ A (possibly empty) list of premise‑ID sets that have already been combined in previous steps.
 
 Your task for each step:
 - Choose ONE rule (with a head and body) and SOME facts (with a head only) by their premise IDs 
@@ -38,6 +39,8 @@ Output MUST be a single JSON object with the fields:
 - "background_premises": list of strings, each a fact or rule ending
   with a period.
 - "is_answer_goal": boolean.
+You MUST NOT choose a set of "selected_premise_ids" that is exactly equal
+to any of the previously combined premise‑ID sets.
 """
 
 
@@ -56,11 +59,22 @@ def select_next_step(
     premises: List[Premise],
     answer_spec: AnswerSpec,
     llm: LLMClient,
+    previous_premise_sets: Optional[List[List[int]]] = None,
 ) -> SelectorDecision:
     """
     Ask the LLM which premises to combine next and what goal to pursue.
     """
     premises_block = _render_premises(premises)
+    previous_sets_block = ""
+    if previous_premise_sets:
+        formatted_sets = ", ".join(
+            "{" + ", ".join(str(pid) for pid in sorted(s)) + "}"
+            for s in previous_premise_sets
+        )
+        previous_sets_block = (
+            "Previously combined premise ID sets (do NOT choose any of these exact combinations again):\n"
+            f"{formatted_sets}\n\n"
+        )
     user_content = (
         "Problem:\n"
         f"{problem.strip()}\n\n"
@@ -68,6 +82,7 @@ def select_next_step(
         f"{query.strip()}\n\n"
         "Current premises (by ID):\n"
         f"{premises_block}\n\n"
+        f"{previous_sets_block}"
         "Answer head predicate:\n"
         f"{answer_spec.target}\n\n"
         "Decide the next reasoning step following the instructions."
