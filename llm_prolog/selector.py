@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from .llm_client.llm_client import LLMClient
-from .symbolic.types import AnswerSpec, Premise, SelectorDecision, format_clause
+from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premises
 
 
 SYSTEM_PROMPT = """
@@ -44,15 +44,6 @@ to any of the previously combined premise‑ID sets.
 """
 
 
-def _render_premises(premises: List[Premise]) -> str:
-    lines = []
-    for p in premises:
-        clause_str = format_clause(p.clause)
-        nl = f"  # {p.nl}" if p.nl else ""
-        lines.append(f"{p.id}: {clause_str}{nl}")
-    return "\n".join(lines)
-
-
 def select_next_step(
     problem: str,
     query: str,
@@ -64,7 +55,7 @@ def select_next_step(
     """
     Ask the LLM which premises to combine next and what goal to pursue.
     """
-    premises_block = _render_premises(premises)
+    premises_block = render_premises(premises)
     previous_sets_block = ""
     if previous_premise_sets:
         formatted_sets = ", ".join(

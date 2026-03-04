@@ -326,4 +326,12 @@ def format_clause(clause: Clause) -> str:
     """Render a Clause back into a canonical Prolog‑like string."""
     return str(clause)
 
-
+def render_premises(premises: List[Premise]) -> str:
+    """Render a list of Premise in order, one by line."""
+    lines = []
+    sorted_premises = sorted(premises, key=lambda x: x.id)
+    for p in sorted_premises:
+        clause_str = format_clause(p.clause)
+        nl = f"  # {p.nl}" if p.nl else ""
+        lines.append(f"{p.id}: {clause_str}{nl}")
+    return "\n".join(lines)
