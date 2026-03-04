@@ -3,12 +3,12 @@ Symbolic inference engine for the LLM‑Prolog pipeline.
 
 This module implements a very small Horn‑clause engine:
 - Unification between terms and predicates.
-- A helper to combine a rule and a fact (or two facts) to derive a new fact.
+- Deriving a new clause (Fact or Rule) from one rule and one or more facts.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .types import Clause, Fact, Predicate, Premise, Rule, Term
 
@@ -81,43 +81,72 @@ def _as_rule(clause: Clause) -> Optional[Rule]:
     return clause if isinstance(clause, Rule) else None
 
 
-def infer_from_pair(p1: Premise, p2: Premise) -> Optional[Fact]:
+def _infer_rule_fact(rule: Rule, fact: Fact) -> Optional[Clause]:
     """
-    Attempt to derive a new fact by combining two premises.
-
-    Supported patterns:
-    - Rule + Fact: if the fact unifies with one of the rule's body atoms and
-      the remaining body atoms are trivially satisfiable (no additional
-      constraints), emit the instantiated head.
-    - Fact + Rule: symmetric to the above.
-    - Fact + Fact: currently no new inference; this is where arithmetic‑
-      specific rules could be plugged in later.
+    Derive a new clause from a rule and a fact by unifying the fact with one
+    body atom. If that body atom was the only one, return a Fact; otherwise
+    return a new Rule with the instantiated head and remaining body atoms.
     """
-
-    for first, second in ((p1, p2), (p2, p1)):
-        rule = _as_rule(first.clause)
-        fact = _as_fact(second.clause)
-        if rule is None or fact is None:
+    for i, body_atom in enumerate(rule.body):
+        subst = unify_predicates(body_atom, fact.predicate)
+        if subst is None:
             continue
-
-        # Try to unify the fact with each body atom.
-        for body_atom in rule.body:
-            subst = unify_predicates(body_atom, fact.predicate)
-            if subst is None:
-                continue
-            # For now, require that other body atoms do not add constraints.
-            # A more complete engine would need to check those against the
-            # full set of facts.
-            head_instantiated = apply_subst_predicate(rule.head, subst)
+        head_instantiated = apply_subst_predicate(rule.head, subst)
+        remaining = [
+            apply_subst_predicate(p, subst)
+            for j, p in enumerate(rule.body)
+            if j != i
+        ]
+        if not remaining:
             return Fact(predicate=head_instantiated)
-
-    # Fact + Fact or unsupported combinations: no inference.
+        return Rule(head=head_instantiated, body=tuple(remaining))
     return None
 
 
-def infer_new_premise(prem1: Premise, prem2: Premise) -> Optional[Fact]:
+def reduce_rule_by_facts(premises: Tuple[Premise, ...]) -> Optional[Clause]:
     """
-    Public entry point: attempt to derive a new fact from two premises.
-    """
-    return infer_from_pair(prem1, prem2)
+    Derive a new clause from a tuple of premises containing exactly one rule
+    and the rest facts.
 
+    - One rule + one fact: unify the fact with one body atom. If it was the
+      only body atom, return a Fact (instantiated head); otherwise return a
+      new Rule with instantiated head and remaining body atoms.
+    - One rule + multiple facts: reduce the rule by each fact in turn; return
+      the final derived clause (Fact or Rule) if at least one reduction
+      occurred.
+
+    Example (bird / swims / flightless):
+      [1] bird(penguin).  [2] swims(penguin).  [3] flightless(B) :- bird(B), swims(B).
+      Step 1: premises = ([1], [3]) -> flightless(penguin) :- swims(penguin).
+      Step 2: premises = ([2], [4]) -> flightless(penguin).
+    """
+    rules = [p for p in premises if _as_rule(p.clause) is not None]
+    facts = [p for p in premises if _as_fact(p.clause) is not None]
+    if len(rules) != 1:
+        return None
+    rule = _as_rule(rules[0].clause)
+    assert rule is not None
+    fact_clauses: List[Fact] = []
+    for p in facts:
+        f = _as_fact(p.clause)
+        if f is not None:
+            fact_clauses.append(f)
+    current: Clause = rule
+    any_reduction = False
+    for fact in fact_clauses:
+        if not isinstance(current, Rule):
+            break
+        derived = _infer_rule_fact(current, fact)
+        if derived is not None:
+            current = derived
+            any_reduction = True
+    return current if any_reduction else None
+
+
+def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
+    """
+    Public entry point: attempt to derive a new clause from a list of premises
+    containing exactly one rule and one or more facts. Returns a Fact or Rule,
+    or None.
+    """
+    return reduce_rule_by_facts(tuple(premises))
