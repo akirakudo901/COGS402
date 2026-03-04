@@ -32,6 +32,14 @@ EXAMPLE_1 = GSM8KExample(
     ground_truth=8,
 )
 
+EXAMPLE_2 = GSM8KExample(
+    problem=(
+        "Kendra has 3 more than twice as many berries as Sam. Sam has half as many berries as Martha."
+    ),
+    query="If Martha has 40 berries, how many berries does Kendra have?",
+    ground_truth=43,
+)
+
 
 def _extract_numeric_answer_from_fact(fact: Fact) -> Optional[int]:
     """
@@ -70,7 +78,7 @@ def run_single_example(example: GSM8KExample = EXAMPLE_1) -> None:
     numeric_answer: Optional[int] = None
     if result.answer_premise and isinstance(result.answer_premise.clause, Fact):
         numeric_answer = _extract_numeric_answer_from_fact(result.answer_premise.clause)
-
+    print("Derived answer premise:", result.answer_premise)
     print("Derived numeric answer:", numeric_answer)
     print("Ground truth:", example.ground_truth)
     if numeric_answer is not None:
@@ -78,6 +86,9 @@ def run_single_example(example: GSM8KExample = EXAMPLE_1) -> None:
     else:
         print("Match: False (no numeric answer extracted)")
 
+    # Show obtained steps
+    for i, s in enumerate(result.steps):
+        print(f"Step {i}: {s}")
 
 def evaluate_examples(
     examples: Iterable[GSM8KExample],
@@ -130,5 +141,5 @@ def evaluate_examples(
 if __name__ == "__main__":
     # For now, run the single example; users can call evaluate_examples
     # from elsewhere with a list of GSM8KExample instances.
-    run_single_example()
+    run_single_example(example=EXAMPLE_2)
 
