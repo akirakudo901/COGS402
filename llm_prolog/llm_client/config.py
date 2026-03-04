@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv # for loading API keys from .env file
 
 OPENROUTER_BASE_URL_DEFAULT = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -38,6 +39,9 @@ def load_openrouter_config(
     - OPENROUTER_API_KEY: required
     - OPENROUTER_MODEL: optional override for the default model
     """
+
+    # load API key & optionally the model via dotenv
+    load_dotenv()
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
