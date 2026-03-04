@@ -13,7 +13,7 @@ syntax sufficient for the project (no nested function symbols, no lists).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple, Union
 
 
@@ -93,12 +93,46 @@ class Premise:
 
 @dataclass(frozen=True)
 class AnswerSpec:
-    """Target predicate/head we hope to derive."""
+    """
+    Target predicate/head we hope to derive.
+
+    Invariant:
+    - `target` contains exactly one *logical* variable name (which may appear
+      in one or more argument positions).
+    - All other arguments are constants.
+
+    This encodes that the final answer is a single value that will unify with
+    this distinguished variable, while other arguments can pin down context
+    via constants.
+    """
 
     target: Predicate
+    # Name of the single logical variable that the final answer will bind to.
+    variable_name: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        # Collect distinct logical variable names across all arguments.
+        var_names = {t.name for t in self.target.args if t.is_variable}
+        if not var_names:
+            raise ValueError(
+                "AnswerSpec.target must contain exactly one logical variable, "
+                "but found none."
+            )
+        if len(var_names) > 1:
+            raise ValueError(
+                "AnswerSpec.target must contain exactly one logical variable, "
+                f"but found multiple: {sorted(var_names)}"
+            )
+        # Freeze the single distinguished variable name.
+        object.__setattr__(self, "variable_name", next(iter(var_names)))
+
+    @property
+    def variable(self) -> Term:
+        """Return the distinguished answer variable as a Term."""
+        return Term.variable(self.variable_name)
 
     def __repr__(self) -> str:
-        return f"AnswerSpec(target={self.target})"
+        return f"AnswerSpec(target={self.target}, variable={self.variable_name})"
 
 
 @dataclass
@@ -292,8 +326,4 @@ def format_clause(clause: Clause) -> str:
     """Render a Clause back into a canonical Prolog‑like string."""
     return str(clause)
 
-
-def same_predicate_shape(a: Predicate, b: Predicate) -> bool:
-    """Check if two predicates have the same name and arity."""
-    return a.name == b.name and len(a.args) == len(b.args)
 

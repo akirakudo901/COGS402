@@ -16,15 +16,14 @@ from typing import FrozenSet, List, Optional, Set, Tuple
 from .llm_client.llm_client import LLMClient
 from .nl_symbol_converter import convert_problem_to_symbols
 from .selector import select_next_step
-from .symbolic.inference import infer_new_premise
+from .symbolic.inference import infer_new_premise, unify_predicates
 from .symbolic.types import (
     AnswerSpec,
     PipelineResult,
     PipelineStep,
     Premise,
     SelectorDecision,
-    parse_fact_or_rule,
-    same_predicate_shape,
+    parse_fact_or_rule
 )
 from .symbol_nl_converter import symbols_to_nl
 
@@ -68,7 +67,16 @@ def _answer_matches(premise: Premise, answer_spec: AnswerSpec) -> bool:
 
     if not isinstance(clause, Fact):
         return False
-    return same_predicate_shape(clause.predicate, answer_spec.target)
+
+    # Require that the derived fact unify with the full answer head pattern,
+    # including any constant arguments, and that the distinguished answer
+    # variable be bound to a concrete value.
+    subst = unify_predicates(answer_spec.target, clause.predicate)
+    if subst is None:
+        return False
+
+    bound = subst.get(answer_spec.variable_name)
+    return bound is not None and not bound.is_variable
 
 
 def run_pipeline(

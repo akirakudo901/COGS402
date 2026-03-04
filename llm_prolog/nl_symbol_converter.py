@@ -34,8 +34,8 @@ Language:
 Goal:
 - Extract base facts from the problem statement.
 - Introduce simple rules that connect those facts to the question or target query.
-- Define a single answer head predicate that represents the final answer or outcome
-  we want to establish, such as answer(Value) or eq(lhs, rhs).
+- Define a single answer head predicate with exactly one variable representing 
+  the final answer, such as answer(Value) or eq(Lhs, rhs).
 
 Output format:
 - You MUST return a single JSON object with the keys:
@@ -56,7 +56,7 @@ def _build_user_prompt(problem: str, query: str) -> str:
         "Instructions:\n"
         "- Identify the important information and relationships.\n"
         "- Express them as Prolog‑style facts and rules.\n"
-        "- Choose an answer_head predicate that encodes the final outcome "
+        "- Choose an answer_head predicate with one variable encoding the final outcome "
         "needed to answer the question.\n"
         "- Keep the theory small and focused on what is needed."
     )
@@ -100,6 +100,8 @@ def convert_problem_to_symbols(
         raise ValueError("NL‑Symbol converter did not return a valid 'answer_head' string.")
 
     target_pred = parse_predicate(answer_head_str)
+    # The AnswerSpec enforces that the target predicate contains exactly one
+    # logical variable (the final answer) and any number of constants.
     answer_spec = AnswerSpec(target=target_pred)
     return premises, answer_spec
 
