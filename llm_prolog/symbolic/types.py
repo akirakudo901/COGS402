@@ -189,6 +189,23 @@ def parse_predicate(text: str) -> Predicate:
     if not text:
         raise ValueError("Empty predicate string")
 
+    # Prolog arithmetic evaluation: `X is Expr.`
+    # We represent it internally as a normal predicate `mathIs(LHS, RHS_EXPR)`.
+    # RHS_EXPR is stored as a constant Term containing the expression string.
+    if " is " in text and "(" not in text:
+        lhs_str, rhs_str = text.split(" is ", 1)
+        lhs_str = lhs_str.strip()
+        rhs_str = rhs_str.strip()
+        if not lhs_str or not rhs_str:
+            raise ValueError(f"Invalid is/2 predicate string: {text}")
+        return Predicate(
+            name="mathIs",
+            args=(
+                _parse_term(lhs_str),
+                Term.constant(rhs_str),
+            ),
+        )
+
     if "(" not in text:
         return Predicate(name=text, args=())
 
@@ -199,6 +216,17 @@ def parse_predicate(text: str) -> Predicate:
     arg_str = rest[:-1]
     raw_args = [a.strip() for a in arg_str.split(",") if a.strip()]
     args = tuple(_parse_term(a) for a in raw_args)
+    # Also accept functional form `is(LHS, RHS_EXPR)` and normalize it.
+    if name == "is":
+        if len(args) != 2:
+            raise ValueError(f"Invalid is/2 predicate arity: {text}")
+        lhs, rhs = args
+        if rhs.is_variable:
+            # `is/2` evaluates the RHS expression; a bare variable RHS is not
+            # a supported expression in this project representation.
+            raise ValueError(f"Invalid is/2 RHS expression: {text}")
+        return Predicate(name="mathIs", args=(lhs, rhs))
+
     return Predicate(name=name, args=args)
 
 
