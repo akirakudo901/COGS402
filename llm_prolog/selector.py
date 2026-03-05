@@ -25,22 +25,24 @@ You are given:
 ‑ A (possibly empty) list of premise‑ID sets that have already been combined in previous steps.
 
 Your task for each step:
-- Choose ONE rule (with a head and body) and SOME facts (with a head only) by their premise IDs 
-  that should be combined for the next inference step.
+- State what new premise you intend for the inference engine to derive. This premise 
+  must be new among existing premises.
+- Indicate whether this new premise is directly the answer head goal.
 - Optionally propose new background premises (facts or rules) if the
   current theory is insufficient.
-- State what new premise you intend for the inference engine to derive.
-- Indicate whether this new premise is directly the answer head goal.
+- Choose ONE rule (with a head and body) and ONE OR MORE facts (with a head only) by their premise IDs 
+  that should be combined to derive the new premise via the inference step.
+- You MUST NOT choose a set of premises that is contained in the provided list of previously 
+  combined premise‑ID sets, as they have been already explored.
 
 Output MUST be a single JSON object with the fields:
-- "selected_premise_ids": list of integer IDs.
 - "proposed_new_premise": string or null (a Prolog‑style clause WITHOUT
-  needing to be valid; this is an intention).
+  needing to be valid; this is an intention. It must be new from existing premises).
+- "is_new_proposal": boolean.
+- "is_answer_goal": boolean.
 - "background_premises": list of strings, each a fact or rule ending
   with a period.
-- "is_answer_goal": boolean.
-You MUST NOT choose a set of "selected_premise_ids" that is exactly equal
-to any of the previously combined premise‑ID sets.
+- "selected_premise_ids": list of integer IDs indicating premise sets selected previously.
 """
 
 
@@ -64,7 +66,7 @@ def select_next_step(
         )
         previous_sets_block = (
             "Previously combined premise ID sets (do NOT choose any of these exact combinations again):\n"
-            f"{formatted_sets}\n\n"
+            f"{{{formatted_sets},}}\n\n"
         )
     user_content = (
         "Problem:\n"
