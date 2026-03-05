@@ -32,7 +32,6 @@ from .symbol_nl_converter import symbols_to_nl
 class PipelineConfig:
     max_steps: int = 10
     explain: bool = True
-    return_premises : bool = True # return all premises at end of pipeline?
 
 
 def _append_background_premises(
@@ -85,7 +84,7 @@ def run_pipeline(
     query: str,
     llm: Optional[LLMClient] = None,
     config: Optional[PipelineConfig] = None,
-) -> Tuple[PipelineResult, Optional[List[Premise]]]:
+) -> PipelineResult:
     """
     Run the full LLM‑Prolog pipeline on a single problem‑query pair.
     """
@@ -222,14 +221,11 @@ def run_pipeline(
             # Explanations are best‑effort; do not fail the pipeline if they break.
             pass
 
-    result = PipelineResult(
+    return PipelineResult(
         success=success,
         answer_premise=final_answer,
         steps=steps,
+        answer_spec=answer_spec,
+        final_premises=premises,
         reason=reason,
     )
-
-    if cfg.return_premises:
-        return result, premises
-    else:
-        return result

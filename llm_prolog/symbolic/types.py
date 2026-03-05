@@ -14,7 +14,7 @@ syntax sufficient for the project (no nested function symbols, no lists).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 
 @dataclass(frozen=True)
@@ -184,6 +184,10 @@ class PipelineResult:
     success: bool
     answer_premise: Optional[Premise]
     steps: List[PipelineStep]
+    answer_spec: AnswerSpec
+    # All premises available at the end of the pipeline run, including
+    # originals, selector‑provided background premises, and inferred ones.
+    final_premises: List[Premise]
     reason: Optional[str] = None
 
     def __repr__(self) -> str:
@@ -191,11 +195,32 @@ class PipelineResult:
             f"success={self.success}",
             f"answer_premise={self.answer_premise}",
             f"steps={self.steps}",
+            f"answer_spec={self.answer_spec}",
+            f"final_premises={self.final_premises}",
         ]
         if self.reason is not None:
             parts.append(f"reason={self.reason}")
         inner = ", ".join(parts)
         return f"PipelineResult({inner})"
+
+
+def extract_premise_derivation_dict(
+    result: PipelineResult,
+) -> Dict[int, Tuple[List[int], int]]:
+    """
+    Build a dictionary summarizing which premises were used to derive new ones.
+
+    The returned mapping has:
+    - key: step_index for each step that produced a new premise
+    - value: (used_premise_ids, new_premise_id)
+    """
+    derivations: Dict[int, Tuple[List[int], int]] = {}
+    for step in result.steps:
+        if step.new_premise is None:
+            continue
+        derivations[step.step_index] = (sorted(list(step.used_premise_ids)), 
+                                        step.new_premise.id)
+    return derivations
 
 
 #
