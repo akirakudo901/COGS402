@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from llm_prolog.llm_client.llm_client import LLMClient
+from llm_prolog.llm_client.llm_client import LLMClient, load_openrouter_config
 from llm_prolog.pipeline import PipelineConfig, run_pipeline
 from llm_prolog.symbolic.types import Fact
 
@@ -60,27 +60,31 @@ def _extract_numeric_answer_from_fact(fact: Fact) -> Optional[int]:
         return None
 
 
+
+
+
 def run_single_example(example: GSM8KExample = EXAMPLE_1) -> None:
     """Run the full pipeline on a single GSM8K‑like example and print results."""
-    llm = LLMClient()
-    cfg = PipelineConfig(max_steps=8, explain=True, return_premises=True)
+    TEMPERATURE = 0.5
 
-    result, premises = run_pipeline(
+    llm_config = load_openrouter_config(temperature=TEMPERATURE)
+
+    llm = LLMClient(llm_config)
+    cfg = PipelineConfig(max_steps=5, explain=True)
+
+    result = run_pipeline(
         problem=example.problem,
         query=example.query,
         llm=llm,
         config=cfg,
     )
 
-    print("Premises:", "\n".join([f"{p!r}" for p in premises]))
+    print(result)
 
-    print("Success:", result.success)
-    print("Reason:", result.reason)
-
+    print("="*20)
     numeric_answer: Optional[int] = None
     if result.answer_premise and isinstance(result.answer_premise.clause, Fact):
         numeric_answer = _extract_numeric_answer_from_fact(result.answer_premise.clause)
-    print("Derived answer premise:", result.answer_premise)
     print("Derived numeric answer:", numeric_answer)
     print("Ground truth:", example.ground_truth)
     if numeric_answer is not None:
@@ -88,9 +92,6 @@ def run_single_example(example: GSM8KExample = EXAMPLE_1) -> None:
     else:
         print("Match: False (no numeric answer extracted)")
 
-    # Show obtained steps
-    for i, s in enumerate(result.steps):
-        print(f"Step {i}: {s}")
 
 def evaluate_examples(
     examples: Iterable[GSM8KExample],
