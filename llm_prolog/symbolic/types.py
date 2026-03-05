@@ -33,8 +33,11 @@ class Term:
         return Term(name=name, is_variable=False)
 
     def __repr__(self) -> str:
-        return f"{self.name.capitalize() if self.is_variable 
-                  else self.name.lower()}"
+        return f"Term(name={self.name!r}, is_variable={self.is_variable!r})"
+
+    def __str__(self) -> str:
+        # Prolog-style: variables are uppercase, constants are lowercase.
+        return self.name.capitalize() if self.is_variable else self.name.lower()
 
 
 @dataclass(frozen=True)
@@ -42,16 +45,22 @@ class Predicate:
     name: str
     args: Tuple[Term, ...]
 
+    def __repr__(self) -> str:
+        return f"Predicate(name={self.name!r}, args={self.args!r})"
+
     def __str__(self) -> str:
         if not self.args:
             return self.name
-        arg_str = ", ".join(t.name for t in self.args)
+        arg_str = ", ".join(str(t) for t in self.args)
         return f"{self.name}({arg_str})"
 
 
 @dataclass(frozen=True)
 class Fact:
     predicate: Predicate
+
+    def __repr__(self) -> str:
+        return f"Fact(predicate={self.predicate!r})"
 
     def __str__(self) -> str:
         return f"{self.predicate}."
@@ -61,6 +70,9 @@ class Fact:
 class Rule:
     head: Predicate
     body: Tuple[Predicate, ...]
+
+    def __repr__(self) -> str:
+        return f"Rule(head={self.head!r}, body={self.body!r})"
 
     def __str__(self) -> str:
         if not self.body:
@@ -82,13 +94,22 @@ class Premise:
     source: Optional[str] = None
 
     def __repr__(self) -> str:
-        parts = [f"\nclause='{self.clause}'"]
-        if self.nl is not None:
-            parts.append(f"\nnl={self.nl}")
-        if self.source is not None:
-            parts.append(f"\nsource={self.source}")
-        inner = ", ".join(parts)
-        return f"Premise_{self.id}({inner})"
+        return (
+            "Premise("
+            f"id={self.id!r}, "
+            f"clause={self.clause!r}, "
+            f"nl={self.nl!r}, "
+            f"source={self.source!r})"
+        )
+
+    def __str__(self) -> str:
+        clause_str = format_clause(self.clause)
+        lines = [f"{self.id}: {clause_str}"]
+        if self.nl:
+            lines[0] += f" # {self.nl}"
+        # if self.source:
+        #     lines.append(f"  Source: {self.source}")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -132,7 +153,16 @@ class AnswerSpec:
         return Term.variable(self.variable_name)
 
     def __repr__(self) -> str:
-        return f"AnswerSpec(target={self.target}, variable={self.variable_name})"
+        return (
+            "AnswerSpec("
+            f"target={self.target!r}, "
+            f"variable_name={self.variable_name!r})"
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"'{self.variable_name}' in '{self.target}'"
+        )
 
 
 @dataclass
@@ -154,6 +184,25 @@ class SelectorDecision:
             f"should_stop={self.should_stop}, "
             f"stop_reason={self.stop_reason})"
         )
+    
+    def __str__(self) -> str:
+        lines = ["Selector decision:"]
+
+        if self.background_premises:
+            lines.append("  Proposed new background premises:")
+            for premise in self.background_premises:
+                lines.append(f"    * {premise}")
+        
+        if self.proposed_new_premise:
+            spec = 'goal' if self.is_answer_goal else 'non-goal'
+            lines.append(f"  Proposed to combine IDs {self.selected_premise_ids} to deduce a {spec} premise:")
+            lines.append(f"    {self.proposed_new_premise}")
+        else:
+            lines.append("  Proposed no new premise.")
+        
+        if self.should_stop and self.stop_reason:
+            lines.append(f"  Decided we must stop because: {self.stop_reason}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -167,16 +216,32 @@ class PipelineStep:
 
     def __repr__(self) -> str:
         parts = [
-            f"step_index={self.step_index}",
-            f"used_premise_ids={self.used_premise_ids}",
-            f"new_premise={self.new_premise}",
-            f"decision={self.decision}",
-            f"success={self.success}",
+            f"step_index={self.step_index!r}",
+            f"used_premise_ids={self.used_premise_ids!r}",
+            f"new_premise={self.new_premise!r}",
+            f"decision={self.decision!r}",
+            f"success={self.success!r}",
         ]
         if self.note is not None:
-            parts.append(f"note={self.note}")
+            parts.append(f"note={self.note!r}")
         inner = ", ".join(parts)
         return f"PipelineStep({inner})"
+    
+    def __str__(self) -> str:
+        lines = []
+        lines.append(f"Step {self.step_index} ({'succeeded' if self.success else 'failed'}):")
+        lines.append(f"."*20)
+        lines.append(f"{self.decision}")
+        lines.append(f"."*20)
+        if self.new_premise is not None:
+            lines.append(f"  Used premise IDs {self.used_premise_ids} to deduce the new premise:")
+            lines.append(f"    {self.new_premise}")
+        else:
+            lines.append(f"  Used premise IDs {self.used_premise_ids} to deduce NO new premise.")
+
+        if self.note is not None:
+            lines.append(f"  Note: {self.note}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -192,17 +257,40 @@ class PipelineResult:
 
     def __repr__(self) -> str:
         parts = [
-            f"success={self.success}",
-            f"answer_premise={self.answer_premise}",
-            f"steps={self.steps}",
-            f"answer_spec={self.answer_spec}",
-            f"final_premises={self.final_premises}",
+            f"success={self.success!r}",
+            f"answer_premise={self.answer_premise!r}",
+            f"steps={self.steps!r}",
+            f"answer_spec={self.answer_spec!r}",
+            f"final_premises={self.final_premises!r}",
         ]
         if self.reason is not None:
-            parts.append(f"reason={self.reason}")
+            parts.append(f"reason={self.reason!r}")
         inner = ", ".join(parts)
         return f"PipelineResult({inner})"
+    
+    def __str__(self) -> str:
+        status = "succeeded" if self.success else "failed"
+        lines = [f"Pipeline {status}."]
+        if self.reason:
+            lines.append(f"Reason: {self.reason}")
+        
+        lines.append("Premises:")
+        lines.append(render_premises(self.final_premises))
 
+        if self.answer_premise:
+            lines.append(f"Answer premise: {self.answer_premise}")
+        else:
+            lines.append("Answer premise: None")
+
+        lines.append(f"Answer spec: {self.answer_spec}")
+
+        # Show obtained steps
+        lines.append("="*20)
+        lines.append("Pipeline steps:")
+        for s in self.steps:
+            lines.append("-"*20)
+            lines.append(f"{s}")
+        return "\n".join(lines)
 
 def extract_premise_derivation_dict(
     result: PipelineResult,
@@ -356,7 +444,5 @@ def render_premises(premises: List[Premise]) -> str:
     lines = []
     sorted_premises = sorted(premises, key=lambda x: x.id)
     for p in sorted_premises:
-        clause_str = format_clause(p.clause)
-        nl = f"  # {p.nl}" if p.nl else ""
-        lines.append(f"{p.id}: {clause_str}{nl}")
+        lines.append(f"{p}")
     return "\n".join(lines)
