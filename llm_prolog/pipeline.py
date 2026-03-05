@@ -11,7 +11,7 @@ This module wires together:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import FrozenSet, List, Optional, Set, Tuple
+from typing import FrozenSet, List, Optional, Set
 
 from tqdm import tqdm
 
@@ -83,17 +83,17 @@ def _answer_matches(premise: Premise, answer_spec: AnswerSpec) -> bool:
 
 def run_pipeline(
     problem: str,
-    query: str,
     llm: Optional[LLMClient] = None,
     config: Optional[PipelineConfig] = None,
 ) -> PipelineResult:
     """
-    Run the full LLM‑Prolog pipeline on a single problem‑query pair.
+    Run the full LLM‑Prolog pipeline on a single problem string containing 
+    the full natural‑language description.
     """
     cfg = config or PipelineConfig()
     client = llm or LLMClient()
 
-    premises, answer_spec = convert_problem_to_symbols(problem, query, client)
+    premises, answer_spec = convert_problem_to_symbols(problem, client)
 
     steps: List[PipelineStep] = []
     success = False
@@ -104,7 +104,6 @@ def run_pipeline(
     for step_idx in tqdm(range(cfg.max_steps)):
         decision: SelectorDecision = select_next_step(
             problem=problem,
-            query=query,
             premises=premises,
             answer_spec=answer_spec,
             llm=client,
@@ -216,7 +215,7 @@ def run_pipeline(
     # Optionally annotate all premises with NL explanations.
     if cfg.explain:
         try:
-            explanations = symbols_to_nl(problem, query, premises, client)
+            explanations = symbols_to_nl(problem, premises, client)
             for p in premises:
                 if p.id in explanations:
                     p.nl = explanations[p.id]

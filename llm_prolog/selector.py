@@ -19,7 +19,7 @@ SYSTEM_PROMPT = """
 You are a symbolic reasoning planner working over a Prolog‑style theory.
 
 You are given:
-- A general natural language problem and its question.
+- A natural language problem with a question or goal.
 - A list of existing premises (facts and rules) with IDs.
 - A target answer head predicate we ultimately want to prove.
 ‑ A (possibly empty) list of premise‑ID sets that have already been combined in previous steps.
@@ -48,7 +48,6 @@ Output MUST be a single JSON object with the fields:
 
 def select_next_step(
     problem: str,
-    query: str,
     premises: List[Premise],
     answer_spec: AnswerSpec,
     llm: LLMClient,
@@ -71,8 +70,6 @@ def select_next_step(
     user_content = (
         "Problem:\n"
         f"{problem.strip()}\n\n"
-        "Question:\n"
-        f"{query.strip()}\n\n"
         "Current premises (by ID):\n"
         f"{premises_block}\n\n"
         f"{previous_sets_block}"

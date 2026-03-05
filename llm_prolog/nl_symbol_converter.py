@@ -1,8 +1,7 @@
 """
 NL‑to‑symbol converter module.
 
-This module is responsible for taking a natural‑language problem and query
-and producing:
+This module is responsible for taking a natural‑language problem and producing:
 - an initial set of symbolic premises (facts and rules), and
 - an AnswerSpec describing the target head predicate we hope to prove.
 """
@@ -33,8 +32,8 @@ Language:
 
 Goal:
 - Extract base facts from the problem statement.
-- Introduce simple rules that connect those facts to the question or target query.
-- Define a single answer head predicate with exactly one variable representing 
+- Introduce simple rules that connect those facts to the question or goal.
+- Define a single answer head predicate with exactly one variable representing
   the final answer, such as answer(Value) or eq(Lhs, rhs).
 
 Output format:
@@ -47,30 +46,27 @@ Output format:
 """
 
 
-def _build_user_prompt(problem: str, query: str) -> str:
+def _build_user_prompt(problem: str) -> str:
     return (
         "Problem:\n"
         f"{problem.strip()}\n\n"
-        "Question:\n"
-        f"{query.strip()}\n\n"
         "Instructions:\n"
         "- Identify the important information and relationships.\n"
         "- Express them as Prolog‑style facts and rules.\n"
         "- Choose an answer_head predicate with one variable encoding the final outcome "
-        "needed to answer the question.\n"
+        "needed to answer the problem.\n"
         "- Keep the theory small and focused on what is needed."
     )
 
 
 def convert_problem_to_symbols(
     problem: str,
-    query: str,
     llm: LLMClient,
 ) -> Tuple[List[Premise], AnswerSpec]:
     """
-    Convert a problem‑query pair into initial symbolic premises and an answer spec.
+    Convert a natural‑language problem into initial symbolic premises and an answer spec.
     """
-    user_prompt = _build_user_prompt(problem, query)
+    user_prompt = _build_user_prompt(problem)
     data = llm.generate_json(SYSTEM_PROMPT, user_prompt)
 
     raw_facts = data.get("facts", []) or []

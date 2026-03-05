@@ -1,7 +1,7 @@
 """
 Symbol‑to‑NL converter module.
 
-Given symbolic premises and the original problem/query, this module asks an
+Given symbolic premises and the original problem text, this module asks an
 LLM to paraphrase each clause into concise natural‑language explanations.
 """
 
@@ -17,7 +17,7 @@ SYSTEM_PROMPT = """
 You are a logic tutor.
 
 You receive:
-- A word problem and its question.
+- A natural language problem (the full description including the question or goal).
 - A list of Prolog‑style clauses with IDs.
 
 For each clause, provide a short, precise natural‑language explanation of
@@ -39,7 +39,6 @@ def _render_premises(premises: List[Premise]) -> str:
 
 def symbols_to_nl(
     problem: str,
-    query: str,
     premises: List[Premise],
     llm: LLMClient,
 ) -> Dict[int, str]:
@@ -50,8 +49,6 @@ def symbols_to_nl(
     user_content = (
         "Problem:\n"
         f"{problem.strip()}\n\n"
-        "Question:\n"
-        f"{query.strip()}\n\n"
         "Clauses (by ID):\n"
         f"{premises_block}\n\n"
         "Provide explanations for each ID as described."

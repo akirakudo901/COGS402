@@ -30,8 +30,8 @@ COGS402/
 
 ## Pipeline flow
 
-1. **NL–Symbol converter**  
-   An LLM turns the problem and query into:
+1. **NL–Symbol converter**
+   An LLM turns the problem into:
    - A set of initial **premises** (facts and rules in Prolog-like syntax)
    - An **answer spec**: the target predicate we want to prove (e.g. `answer(8)`).
 
@@ -74,10 +74,9 @@ from llm_prolog.pipeline import run_pipeline, PipelineConfig
 
 result = run_pipeline(
     problem="Alice has 3 apples. She buys 5 more. How many apples does Alice have now?",
-    query="How many apples does Alice have now?",
     config=PipelineConfig(max_steps=8, explain=True),
 )
 print(result.success, result.answer_premise, result.reason)
 ```
 
-**Batch evaluation**: call `evaluate_examples()` from `eval_gsm8k` with an iterable of `GSM8KExample(problem=..., query=..., ground_truth=...)`.
+**Batch evaluation**: call `evaluate_examples()` from `eval_gsm8k` with an iterable of `GSM8KExample(problem=...,ground_truth=...)`. The harness joins each example's problem and query into a single string for the pipeline.
