@@ -57,7 +57,7 @@ def select_next_step(
     """
     Ask the LLM which premises to combine next and what goal to pursue.
     """
-    premises_block = render_premises(premises)
+    premises_block = render_premises(premises, verbosity_level=2)
     previous_sets_block = ""
     if previous_premise_sets:
         formatted_sets = ", ".join(
