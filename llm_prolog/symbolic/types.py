@@ -308,6 +308,30 @@ class PipelineResult:
             lines.append(f"{s}")
         return "\n".join(lines)
 
+    def extract_answer_constant(self) -> Optional[str]:
+        """
+        Determine which variable in the answer premise is the one of interest
+        (from AnswerSpec), then return the constant bound to it by unification.
+
+        Returns the constant's name (string) if the answer premise is a Fact
+        that unifies with the answer_spec target and the distinguished variable
+        is bound to a constant; otherwise None.
+        """
+        if self.answer_premise is None:
+            return None
+        clause = self.answer_premise.clause
+        if not isinstance(clause, Fact):
+            return None
+        from .inference import unify_predicates
+
+        subst = unify_predicates(self.answer_spec.target, clause.predicate)
+        if subst is None:
+            return None
+        bound = subst.get(self.answer_spec.variable_name)
+        if bound is None or bound.is_variable:
+            return None
+        return bound.name
+
 def extract_premise_derivation_dict(
     result: PipelineResult,
 ) -> Dict[int, Tuple[List[int], int]]:
