@@ -1,10 +1,10 @@
 """
-Evaluation utilities for GSM8K‑style problems.
+Evaluation for GSM8K‑style math word problems.
 
-This module provides:
-- A single hard‑coded GSM8K‑like example for debugging the pipeline.
-- A tiny harness to run the pipeline and compare the derived answer with
-  a ground‑truth numeric answer.
+Uses the generic evaluation harness from eval_common with:
+- GSM8KExample dataclass
+- Validator: extract numeric answer from the answer premise's clause
+- Success measure: exact match of integer answer
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from llm_prolog.llm_client.llm_client import LLMClient, load_openrouter_config
-from llm_prolog.pipeline import PipelineConfig, run_pipeline
 from llm_prolog.symbolic.types import Fact, PipelineResult
+
+from test.eval_common import evaluate_examples, run_single_example
 
 
 @dataclass(frozen=True)
@@ -41,118 +41,90 @@ EXAMPLE_2 = GSM8KExample(
 
 EXAMPLE_3 = GSM8KExample(
     problem=(
-        "Katy makes coffee using teaspoons of sugar and cups of water in the ratio of 7:13. " 
+        "Katy makes coffee using teaspoons of sugar and cups of water in the ratio of 7:13. "
         "If she used a total of 120 teaspoons of sugar and cups of water, calculate the number of teaspoonfuls of sugar she used."
     ),
     ground_truth=42,
 )
 
+EXAMPLE_4 = GSM8KExample(
+    problem=(
+        "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May."
+        "How many clips did Natalia sell altogether in April and May?"
+    ),
+    ground_truth=72,
+)
 
-def _extract_numeric_answer_from_fact(fact: Fact) -> Optional[int]:
-    """
-    Very small helper to extract a trailing numeric argument from an answer fact.
+EXAMPLE_5 = GSM8KExample(
+    problem=(
+        "Tim rides his bike back and forth to work for each of his 5 workdays."
+        "His work is 20 miles away. He also goes for a weekend bike ride of 200 miles."
+        "If he can bike at 25 mph how much time does he spend biking a week?"
+    ),
+    ground_truth=16,
+)
 
-    Example expected shapes:
-      - answer(8).
-      - apples_total(8).
-    """
-    if not fact.predicate.args:
-        return None
-    last = fact.predicate.args[-1]
-    if last.is_variable:
+EXAMPLE_6 = GSM8KExample(
+    problem=(
+        "Brennan was researching his school project and had to download files from the internet"
+        "to his computer to use for reference. After downloading 800 files, he deleted 70% of them"
+        "because they were not helpful. He downloaded 400 more files but again realized that"
+        "3/5 of them were irrelevant. How many valuable files was he left with after deleting"
+        "the unrelated files he downloaded in the second round?"
+    ),
+    ground_truth=400,
+)
+
+
+def gsm8k_validator(result: PipelineResult) -> Optional[int]:
+    """Extract the derived numeric answer from the pipeline result (GSM8K format)."""
+    answer = result.extract_answer_constant()
+    if answer is None:
         return None
     try:
-        return int(last.name)
+        return int(answer)
     except ValueError:
         return None
 
 
+def gsm8k_success_measure(example: GSM8KExample, obtained: Optional[int]) -> bool:
+    """Success = exact match of integer answer."""
+    return obtained is not None and obtained == example.ground_truth
 
-def format_single_result(example : GSM8KExample, result : PipelineResult):
-    print("*"*10)
-    print("Problem: ", example.problem)
-    print("*"*10)
 
-    print(result)
-
-    print("="*20)
-    numeric_answer: Optional[int] = None
-    if result.answer_premise and isinstance(result.answer_premise.clause, Fact):
-        numeric_answer = _extract_numeric_answer_from_fact(result.answer_premise.clause)
-    print("Derived numeric answer:", numeric_answer)
-    print("Ground truth:", example.ground_truth)
-    if numeric_answer is not None:
-        print("Match:", numeric_answer == example.ground_truth)
-    else:
-        print("Match: False (no numeric answer extracted)")
-
-def run_single_example(example: GSM8KExample = EXAMPLE_1) -> None:
-    """Run the full pipeline on a single GSM8K‑like example and print results."""
-    TEMPERATURE = 0.5
-
-    llm_config = load_openrouter_config(temperature=TEMPERATURE)
-
-    llm = LLMClient(llm_config)
-    cfg = PipelineConfig(max_steps=5, explain=True)
-
-    result = run_pipeline(
-        problem=example.problem,
-        llm=llm,
-        config=cfg,
+def run_single_example_gsm8k(example: GSM8KExample = EXAMPLE_1) -> None:
+    """Run the pipeline on a single GSM8K example and print results."""
+    run_single_example(
+        example,
+        gsm8k_validator,
+        gsm8k_success_measure,
+        show_derived_label="Derived numeric answer",
+        show_expected_label="Ground truth",
     )
 
-    format_single_result(example, result)
 
-
-def evaluate_examples(
+def evaluate_gsm8k(
     examples: Iterable[GSM8KExample],
     *,
     max_steps: int = 8,
 ) -> None:
-    """
-    Run the pipeline over a collection of examples and print a simple
-    accuracy summary.
-    """
-    llm = LLMClient()
-    cfg = PipelineConfig(max_steps=max_steps, explain=False)
-
-    total = 0
-    correct = 0
-    for ex in examples:
-        total += 1
-        result = run_pipeline(
-            problem=ex.problem,
-            llm=llm,
-            config=cfg,
-        )
-
-        numeric_answer: Optional[int] = None
-        if result.answer_premise and isinstance(result.answer_premise.clause, Fact):
-            numeric_answer = _extract_numeric_answer_from_fact(result.answer_premise.clause)
-
-        is_correct = numeric_answer == ex.ground_truth
-        if is_correct:
-            correct += 1
-
-        format_single_result(ex, result)
-        print("-----")
-
-
-    if total > 0:
-        accuracy = correct / total
-        print("=====")
-        print(f"Total examples: {total}")
-        print(f"Correct: {correct}")
-        print(f"Accuracy: {accuracy:.3f}")
-    else:
-        print("No examples to evaluate.")
+    """Run the pipeline over GSM8K examples and print accuracy summary."""
+    evaluate_examples(
+        examples,
+        gsm8k_validator,
+        gsm8k_success_measure,
+        max_steps=max_steps,
+        show_derived_label="Derived numeric answer",
+        show_expected_label="Ground truth",
+    )
 
 
 if __name__ == "__main__":
-    # For now, run the single example; users can call evaluate_examples
-    # from elsewhere with a list of GSM8KExample instances.
-    # run_single_example(example=EXAMPLE_2)
-
-    evaluate_examples(examples=[
-        # EXAMPLE_1, EXAMPLE_2, 
-        EXAMPLE_3], max_steps=20)
+    evaluate_gsm8k(
+        examples=[
+            EXAMPLE_1,
+            EXAMPLE_5,
+            EXAMPLE_6,
+        ],
+        max_steps=20,
+    )
