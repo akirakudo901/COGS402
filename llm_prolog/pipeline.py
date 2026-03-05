@@ -85,7 +85,7 @@ def run_pipeline(
     query: str,
     llm: Optional[LLMClient] = None,
     config: Optional[PipelineConfig] = None,
-) -> PipelineResult:
+) -> Tuple[PipelineResult, Optional[List[Premise]]]:
     """
     Run the full LLM‑Prolog pipeline on a single problem‑query pair.
     """
