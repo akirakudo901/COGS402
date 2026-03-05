@@ -92,6 +92,7 @@ class Premise:
     clause: Clause
     nl: Optional[str] = None
     source: Optional[str] = None
+    parent_ids: Optional[List[int]] = None
 
     def __repr__(self) -> str:
         return (
@@ -99,16 +100,31 @@ class Premise:
             f"id={self.id!r}, "
             f"clause={self.clause!r}, "
             f"nl={self.nl!r}, "
-            f"source={self.source!r})"
+            f"source={self.source!r}, "
+            f"parent_ids={self.parent_ids!r})"
         )
 
     def __str__(self) -> str:
+        return self.str_verbose(level=3)
+    
+    def str_verbose(self, *, level : int) -> str:
+        """
+        Produces string with different verbosity.
+        Level 0: clause
+        Level 1: clause + natural language description
+        Level 2: clause + nl desc + parent ids
+        Level 3: clause + nl desc + p ids + source
+        """
+        if level not in range(4):
+            raise Exception("str_verbose accepts verbosity levels from 0 to 3 only.")
         clause_str = format_clause(self.clause)
         lines = [f"{self.id}: {clause_str}"]
-        if self.nl:
+        if self.nl and level >= 1:
             lines[0] += f" # {self.nl}"
-        # if self.source:
-        #     lines.append(f"  Source: {self.source}")
+        if self.parent_ids is not None and len(self.parent_ids) > 0 and level >= 2:
+            lines.append(f"  (from premises {', '.join(str(pid) for pid in self.parent_ids)})")
+        if self.source and level >= 3:
+            lines.append(f"  Source: {self.source}")
         return "\n".join(lines)
 
 
@@ -439,10 +455,13 @@ def format_clause(clause: Clause) -> str:
     """Render a Clause back into a canonical Prolog‑like string."""
     return str(clause)
 
-def render_premises(premises: List[Premise]) -> str:
-    """Render a list of Premise in order, one by line."""
+def render_premises(premises: List[Premise], verbosity_level : int=1) -> str:
+    """
+    Render a list of Premise in order, one by line. 
+    Can adjust verbosity_level (see Premise.str_verbose)
+    """
     lines = []
     sorted_premises = sorted(premises, key=lambda x: x.id)
     for p in sorted_premises:
-        lines.append(f"{p}")
+        lines.append(p.str_verbose(level=verbosity_level))
     return "\n".join(lines)

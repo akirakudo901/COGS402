@@ -189,6 +189,7 @@ def run_pipeline(
             clause=new_clause,
             nl=None,
             source="inference",
+            parent_ids=list(decision.selected_premise_ids),
         )
         premises.append(new_premise)
 
