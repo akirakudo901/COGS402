@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import FrozenSet, List, Optional, Set, Tuple
 
+from tqdm import tqdm
+
 from .llm_client.llm_client import LLMClient
 from .nl_symbol_converter import convert_problem_to_symbols
 from .selector import select_next_step
@@ -99,7 +101,7 @@ def run_pipeline(
     reason: Optional[str] = None
     used_premise_sets: Set[FrozenSet[int]] = set()
 
-    for step_idx in range(cfg.max_steps):
+    for step_idx in tqdm(range(cfg.max_steps)):
         decision: SelectorDecision = select_next_step(
             problem=problem,
             query=query,
