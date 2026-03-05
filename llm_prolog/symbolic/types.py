@@ -355,7 +355,7 @@ def parse_predicate(text: str) -> Predicate:
     # Prolog arithmetic evaluation: `X is Expr.`
     # We represent it internally as a normal predicate `mathIs(LHS, RHS_EXPR)`.
     # RHS_EXPR is stored as a constant Term containing the expression string.
-    if " is " in text and "(" not in text:
+    if " is " in text:
         lhs_str, rhs_str = text.split(" is ", 1)
         lhs_str = lhs_str.strip()
         rhs_str = rhs_str.strip()
