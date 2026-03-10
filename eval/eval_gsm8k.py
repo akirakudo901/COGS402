@@ -14,7 +14,7 @@ from typing import Iterable, Optional
 
 from llm_prolog.symbolic.types import Fact, PipelineResult
 
-from test.eval_common import evaluate_examples, run_single_example
+from eval.eval_common import evaluate_examples, run_single_example
 
 
 @dataclass(frozen=True)
