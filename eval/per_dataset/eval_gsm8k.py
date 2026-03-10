@@ -171,18 +171,6 @@ def evaluate_gsm8k(
         show_expected_label="Ground truth",
     )
 
-
-if __name__ == "__main__":
-    evaluate_gsm8k(
-        examples=[
-            EXAMPLE_1,
-            EXAMPLE_5,
-            EXAMPLE_6,
-        ],
-        max_steps=20,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Suite integration: task registry
 # ---------------------------------------------------------------------------
@@ -216,3 +204,14 @@ def get_tasks() -> list[SimpleEvalTask]:
 
 
 TASKS = {t.task_id: t for t in get_tasks()}
+
+
+if __name__ == "__main__":
+    evaluate_gsm8k(
+        examples=[
+            EXAMPLE_1,
+            EXAMPLE_5,
+            EXAMPLE_6,
+        ],
+        max_steps=20,
+    )

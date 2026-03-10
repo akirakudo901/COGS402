@@ -460,35 +460,6 @@ EXAMPLE_ENTAILMENTBANK_2 = EntailmentBankExample(
     ),
 )
 
-if __name__ == "__main__":
-    import sys
-
-    demo_examples = [EXAMPLE_ENTAILMENTBANK_1, EXAMPLE_ENTAILMENTBANK_2]
-
-    if len(sys.argv) > 1 and sys.argv[1] == "gold_only":
-        print("=== EntailmentBank Task 1: Gold premises only ===\n")
-        evaluate_entailmentbank_gold_only(demo_examples, max_steps=10)
-    elif len(sys.argv) > 1 and sys.argv[1] == "with_distractors":
-        print("=== EntailmentBank Task 2: Gold + distractor premises ===\n")
-        evaluate_entailmentbank_with_distractors(demo_examples, max_steps=10)
-    elif len(sys.argv) > 1 and Path(sys.argv[1]).exists():
-        path = Path(sys.argv[1])
-        mode = sys.argv[2] if len(sys.argv) > 2 else "gold_only"
-        loaded = load_entailmentbank_jsonl(path)
-        print(f"Loaded {len(loaded)} examples from {path}; mode={mode}\n")
-        if mode == "with_distractors":
-            evaluate_entailmentbank_with_distractors(loaded, max_steps=10)
-        else:
-            evaluate_entailmentbank_gold_only(loaded, max_steps=10)
-    else:
-        print("Usage:")
-        print("  python -m test.eval_entailmentbank gold_only")
-        print("  python -m test.eval_entailmentbank with_distractors")
-        print("  python -m test.eval_entailmentbank <path-to.jsonl> [gold_only|with_distractors]")
-        print("\nRunning demo: gold_only with 2 built-in examples.\n")
-        evaluate_entailmentbank_gold_only(demo_examples, max_steps=10)
-
-
 # ---------------------------------------------------------------------------
 # Suite integration: task registry
 # ---------------------------------------------------------------------------
@@ -521,3 +492,33 @@ def get_tasks() -> list[SimpleEvalTask]:
 
 
 TASKS = {t.task_id: t for t in get_tasks()}
+
+
+if __name__ == "__main__":
+    import sys
+
+    demo_examples = [EXAMPLE_ENTAILMENTBANK_1, EXAMPLE_ENTAILMENTBANK_2]
+
+    if len(sys.argv) > 1 and sys.argv[1] == "gold_only":
+        print("=== EntailmentBank Task 1: Gold premises only ===\n")
+        evaluate_entailmentbank_gold_only(demo_examples, max_steps=10)
+    elif len(sys.argv) > 1 and sys.argv[1] == "with_distractors":
+        print("=== EntailmentBank Task 2: Gold + distractor premises ===\n")
+        evaluate_entailmentbank_with_distractors(demo_examples, max_steps=10)
+    elif len(sys.argv) > 1 and Path(sys.argv[1]).exists():
+        path = Path(sys.argv[1])
+        mode = sys.argv[2] if len(sys.argv) > 2 else "gold_only"
+        loaded = load_entailmentbank_jsonl(path)
+        print(f"Loaded {len(loaded)} examples from {path}; mode={mode}\n")
+        if mode == "with_distractors":
+            evaluate_entailmentbank_with_distractors(loaded, max_steps=10)
+        else:
+            evaluate_entailmentbank_gold_only(loaded, max_steps=10)
+    else:
+        print("Usage:")
+        print("  python -m test.eval_entailmentbank gold_only")
+        print("  python -m test.eval_entailmentbank with_distractors")
+        print("  python -m test.eval_entailmentbank <path-to.jsonl> [gold_only|with_distractors]")
+        print("\nRunning demo: gold_only with 2 built-in examples.\n")
+        evaluate_entailmentbank_gold_only(demo_examples, max_steps=10)
+
