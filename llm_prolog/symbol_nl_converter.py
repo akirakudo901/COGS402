@@ -41,6 +41,11 @@ def symbols_to_nl(
     problem: str,
     premises: List[Premise],
     llm: LLMClient,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
 ) -> Dict[int, str]:
     """
     Ask the LLM to paraphrase each symbolic premise into NL.
@@ -54,7 +59,14 @@ def symbols_to_nl(
         "Provide explanations for each ID as described."
     )
 
-    data = llm.generate_json(SYSTEM_PROMPT, user_content)
+    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    data = llm.generate_json(
+        system_prompt,
+        user_content,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
     raw_explanations = data.get("explanations", {}) or {}
     result: Dict[int, str] = {}
     if isinstance(raw_explanations, dict):

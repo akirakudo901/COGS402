@@ -62,12 +62,24 @@ def _build_user_prompt(problem: str) -> str:
 def convert_problem_to_symbols(
     problem: str,
     llm: LLMClient,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
 ) -> Tuple[List[Premise], AnswerSpec]:
     """
     Convert a natural‑language problem into initial symbolic premises and an answer spec.
     """
     user_prompt = _build_user_prompt(problem)
-    data = llm.generate_json(SYSTEM_PROMPT, user_prompt)
+    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    data = llm.generate_json(
+        system_prompt,
+        user_prompt,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
     raw_facts = data.get("facts", []) or []
     raw_rules = data.get("rules", []) or []

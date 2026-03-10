@@ -52,6 +52,11 @@ def select_next_step(
     answer_spec: AnswerSpec,
     llm: LLMClient,
     previous_premise_sets: Optional[List[List[int]]] = None,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
 ) -> SelectorDecision:
     """
     Ask the LLM which premises to combine next and what goal to pursue.
@@ -78,7 +83,14 @@ def select_next_step(
         "Decide the next reasoning step following the instructions."
     )
 
-    data = llm.generate_json(SYSTEM_PROMPT, user_content)
+    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    data = llm.generate_json(
+        system_prompt,
+        user_content,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
     selected_ids = data.get("selected_premise_ids") or []
     if not isinstance(selected_ids, list):

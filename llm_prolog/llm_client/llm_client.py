@@ -82,6 +82,7 @@ class LLMClient:
         system_prompt: str,
         user_content: str,
         *,
+        model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
@@ -93,7 +94,12 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": user_content})
 
-        data = self._post(messages, temperature=temperature, max_tokens=max_tokens)
+        data = self._post(
+            messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         return data["choices"][0]["message"]["content"]
 
     def generate_json(
@@ -101,6 +107,7 @@ class LLMClient:
         system_prompt: str,
         user_content: str,
         *,
+        model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> Any:
@@ -117,6 +124,7 @@ class LLMClient:
         raw = self.generate(
             full_system,
             user_content,
+            model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
