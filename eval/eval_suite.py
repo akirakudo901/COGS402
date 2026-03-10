@@ -27,6 +27,7 @@ from typing import (
 )
 
 from llm_prolog.llm_client.llm_client import LLMClient
+from llm_prolog.pipeline import PipelineConfig
 
 
 class PipelineMode(str, Enum):
@@ -161,8 +162,7 @@ class EvaluationSuite:
     pipeline_mode: PipelineMode
     model_by_role: ModelMapping
     prompt_overrides: PromptOverrides = field(default_factory=dict)
-    max_steps: int = 8
-    explain: bool = False
+    pipeline_cfg: PipelineConfig = PipelineConfig(max_steps=8, explain=False)
     keep_all_outcomes: bool = False
     keep_random_k: int = 0
     seed: int = 0
@@ -178,11 +178,10 @@ class EvaluationSuite:
             return run_pipeline_mode(
                 problem=problem,
                 mode=self.pipeline_mode,
+                pipeline_cfg=self.pipeline_cfg,
                 llm=llm,
                 model_by_role=self.model_by_role,
                 prompt_overrides=self.prompt_overrides,
-                max_steps=self.max_steps,
-                explain=self.explain,
             )
 
         return _run

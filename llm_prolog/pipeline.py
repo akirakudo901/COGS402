@@ -11,11 +11,12 @@ This module wires together:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import FrozenSet, List, Optional, Set
+from typing import Any, FrozenSet, List, Mapping, Optional, Set
 
 from tqdm import tqdm
 
 from .llm_client.llm_client import LLMClient
+from .cot_baseline import CoTResult, run_cot_baseline
 from .nl_symbol_converter import convert_problem_to_symbols
 from .selector import select_next_step
 from .symbolic.inference import infer_new_premise, unify_predicates
@@ -34,6 +35,39 @@ from .symbol_nl_converter import symbols_to_nl
 class PipelineConfig:
     max_steps: int = 10
     explain: bool = True
+
+
+def _role_key(role: Any) -> str:
+    """
+    Normalize a role key (Enum or string) to a stable string.
+    Expected inputs:
+    - string keys like 'nl_to_symbol'
+    - Enum keys with a `.value` string
+    """
+    if isinstance(role, str):
+        return role
+    value = getattr(role, "value", None)
+    if isinstance(value, str):
+        return value
+    return str(role)
+
+
+def _get_model_spec(model_by_role: Optional[Mapping[Any, Any]], role: str) -> Any | None:
+    if not model_by_role:
+        return None
+    for k, v in model_by_role.items():
+        if _role_key(k) == role:
+            return v
+    return None
+
+
+def _get_prompt_override(prompt_overrides: Optional[Mapping[Any, str]], role: str) -> str | None:
+    if not prompt_overrides:
+        return None
+    for k, v in prompt_overrides.items():
+        if _role_key(k) == role:
+            return v
+    return None
 
 
 def _append_background_premises(
@@ -81,19 +115,34 @@ def _answer_matches(premise: Premise, answer_spec: AnswerSpec) -> bool:
     return bound is not None and not bound.is_variable
 
 
-def run_pipeline(
+def run_symbolic_hybrid_pipeline(
     problem: str,
-    llm: Optional[LLMClient] = None,
-    config: Optional[PipelineConfig] = None,
+    *,
+    llm: LLMClient,
+    pipeline_cfg : PipelineConfig,
+    model_by_role: Optional[Mapping[Any, Any]] = None,
+    prompt_overrides: Optional[Mapping[Any, str]] = None,
 ) -> PipelineResult:
     """
-    Run the full LLM‑Prolog pipeline on a single problem string containing 
-    the full natural‑language description.
-    """
-    cfg = config or PipelineConfig()
-    client = llm or LLMClient()
+    Symbolic hybrid pipeline with optional per-component model/prompt overrides.
 
-    premises, answer_spec = convert_problem_to_symbols(problem, client)
+    Roles:
+    - nl_to_symbol: NL->symbol conversion
+    - selector: premise selection + background premise proposal
+    - symbol_to_nl: NL explanations of symbolic premises
+
+    If roles aren't specified, we fall back to the LLMClient's model & config.
+    """
+
+    nl2sym = _get_model_spec(model_by_role, "nl_to_symbol")
+    premises, answer_spec = convert_problem_to_symbols(
+        problem,
+        llm,
+        model=getattr(nl2sym, "model", None) if nl2sym else None,
+        temperature=getattr(nl2sym, "temperature", None) if nl2sym else None,
+        max_tokens=getattr(nl2sym, "max_tokens", None) if nl2sym else None,
+        system_prompt_override=_get_prompt_override(prompt_overrides, "nl_to_symbol"),
+    )
 
     steps: List[PipelineStep] = []
     success = False
@@ -101,15 +150,20 @@ def run_pipeline(
     reason: Optional[str] = None
     used_premise_sets: Set[FrozenSet[int]] = set()
 
-    for step_idx in tqdm(range(cfg.max_steps)):
+    sel_spec = _get_model_spec(model_by_role, "selector")
+    for step_idx in tqdm(range(pipeline_cfg.max_steps)):
         decision: SelectorDecision = select_next_step(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
-            llm=client,
+            llm=llm,
             previous_premise_sets=[sorted(list(s)) for s in used_premise_sets],
+            model=getattr(sel_spec, "model", None) if sel_spec else None,
+            temperature=getattr(sel_spec, "temperature", None) if sel_spec else None,
+            max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
+            system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
         )
-        
+
         # Integrate any new background premises first.
         if decision.background_premises:
             premises = _append_background_premises(premises, decision.background_premises)
@@ -143,8 +197,8 @@ def run_pipeline(
             continue
 
         # Support variable number of selected_premise_ids
-        selected_premises = []
-        missing_ids = []
+        selected_premises: List[Premise] = []
+        missing_ids: List[int] = []
         for pid in decision.selected_premise_ids:
             premise = _find_premise_by_id(premises, pid)
             if premise is None:
@@ -165,7 +219,6 @@ def run_pipeline(
             )
             continue
 
-        # Record that we've now attempted to combine this particular set of premises.
         used_premise_sets.add(selected_set)
 
         new_clause = infer_new_premise(selected_premises)
@@ -212,15 +265,22 @@ def run_pipeline(
     if not success and reason is None:
         reason = "max_steps_exhausted"
 
-    # Optionally annotate all premises with NL explanations.
-    if cfg.explain:
+    if pipeline_cfg.explain:
+        sym2nl = _get_model_spec(model_by_role, "symbol_to_nl")
         try:
-            explanations = symbols_to_nl(problem, premises, client)
+            explanations = symbols_to_nl(
+                problem,
+                premises,
+                llm,
+                model=getattr(sym2nl, "model", None) if sym2nl else None,
+                temperature=getattr(sym2nl, "temperature", None) if sym2nl else None,
+                max_tokens=getattr(sym2nl, "max_tokens", None) if sym2nl else None,
+                system_prompt_override=_get_prompt_override(prompt_overrides, "symbol_to_nl"),
+            )
             for p in premises:
                 if p.id in explanations:
                     p.nl = explanations[p.id]
         except Exception:
-            # Explanations are best‑effort; do not fail the pipeline if they break.
             pass
 
     return PipelineResult(
@@ -231,3 +291,45 @@ def run_pipeline(
         final_premises=premises,
         reason=reason,
     )
+
+
+def run_pipeline_mode(
+    *,
+    problem: str,
+    mode: Any,
+    pipeline_cfg: PipelineConfig,
+    llm: Optional[LLMClient] = None,
+    model_by_role: Optional[Mapping[Any, Any]] = None,
+    prompt_overrides: Optional[Mapping[Any, str]] = None
+) -> Any:
+    """
+    Unified entrypoint for the evaluation suite.
+    If roles aren't specified, we fall back to the LLMClient's model & config.
+
+    - mode may be a string (e.g. 'symbolic_hybrid') or an Enum with `.value`.
+    - Returns:
+      - PipelineResult for symbolic hybrid
+      - CoTResult for CoT baseline
+    """
+    client = llm or LLMClient()
+    mode_key = _role_key(mode)
+
+    if mode_key in ("symbolic_hybrid", "PipelineMode.SYMBOLIC_HYBRID"):
+        return run_symbolic_hybrid_pipeline(
+            problem,
+            llm=client,
+            pipeline_cfg=pipeline_cfg,
+            model_by_role=model_by_role,
+            prompt_overrides=prompt_overrides,
+        )
+
+    if mode_key in ("cot_baseline", "PipelineMode.COT_BASELINE"):
+        cot_spec = _get_model_spec(model_by_role, "cot_solver")
+        return run_cot_baseline(
+            problem,
+            llm=client,
+            model_spec=cot_spec,
+            system_prompt_override=_get_prompt_override(prompt_overrides, "cot_solver"),
+        )
+
+    raise ValueError(f"Unsupported pipeline mode: {mode_key!r}")

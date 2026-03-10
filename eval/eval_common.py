@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from llm_prolog.llm_client.llm_client import LLMClient, load_openrouter_config
-from llm_prolog.pipeline import PipelineConfig, run_pipeline
+from llm_prolog.pipeline import PipelineConfig, run_symbolic_hybrid_pipeline
 
 
 # Type for the value extracted by the validator (e.g. int, str, set of facts).
@@ -82,10 +82,10 @@ def run_single_example(
         llm_config = load_openrouter_config(temperature=temperature)
         llm = LLMClient(llm_config)
         cfg = PipelineConfig(max_steps=max_steps, explain=explain)
-        result = run_pipeline(
+        result = run_symbolic_hybrid_pipeline(
             problem=problem,
             llm=llm,
-            config=cfg,
+            config=cfg
         )
     else:
         result = pipeline_runner(problem)
@@ -134,10 +134,10 @@ def evaluate_examples(
         
         try:
             if runner is None:
-                result = run_pipeline(
+                result = run_symbolic_hybrid_pipeline(
                     problem=problem,
                     llm=client,
-                    config=cfg,
+                    config=cfg
                 )
             else:
                 result = runner(problem)
