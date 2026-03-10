@@ -64,8 +64,12 @@ class EvalTask(Protocol[TExample, TObtained]):
     def load_examples(self) -> Iterable[TExample]:
         """Return examples (already in the concrete form needed by the runner)."""
 
-    def validator(self, result: Any) -> Optional[TObtained]:
-        """Extract a canonical 'obtained' value from a pipeline result."""
+    def validator(self, result: Any, pipeline_mode: PipelineMode) -> Optional[TObtained]:
+        """
+        Extract a canonical 'obtained' value from a pipeline result.
+
+        The validator can specialize its behavior based on the active PipelineMode.
+        """
 
     def success_measure(self, example: TExample, obtained: Optional[TObtained]) -> bool:
         """Return True iff the obtained value is correct for the example."""
@@ -130,7 +134,7 @@ def default_expected_repr(example: Any) -> str:
 class SimpleEvalTask:
     task_id: str
     examples: Sequence[Any]
-    validator_fn: Callable[[Any], Optional[Any]]
+    validator_fn: Callable[[Any, PipelineMode], Optional[Any]]
     success_measure_fn: Callable[[Any, Optional[Any]], bool]
     problem_fn: Callable[[Any], str] = default_problem_str
     expected_fn: Callable[[Any], str] = default_expected_repr
@@ -205,7 +209,7 @@ class EvaluationSuite:
             expected = task.expected_repr(ex)
             try:
                 result = runner(problem)
-                obtained_val = task.validator(result)
+                obtained_val = task.validator(result, self.pipeline_mode)
                 ok = task.success_measure(ex, obtained_val)
                 if ok:
                     correct += 1

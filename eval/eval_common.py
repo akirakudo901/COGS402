@@ -17,7 +17,6 @@ from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from llm_prolog.llm_client.llm_client import LLMClient, load_openrouter_config
 from llm_prolog.pipeline import PipelineConfig, run_pipeline
-from llm_prolog.symbolic.types import PipelineResult
 
 
 # Type for the value extracted by the validator (e.g. int, str, set of facts).
@@ -26,8 +25,8 @@ T = TypeVar("T")
 
 def format_single_result(
     example: Any,
-    result: PipelineResult,
-    validator: Callable[[PipelineResult], Optional[T]],
+    result: Any,
+    validator: Callable[[Any], Optional[T]],
     success_measure: Callable[[Any, Optional[Any]], bool],
     *,
     show_derived_label: str = "Derived answer",
@@ -59,7 +58,7 @@ def format_single_result(
 
 def run_single_example(
     example: Any,
-    validator: Callable[[PipelineResult], Optional[T]],
+    validator: Callable[[Any], Optional[T]],
     success_measure: Callable[[Any, Optional[Any]], bool],
     *,
     temperature: float = 0.5,
@@ -67,7 +66,8 @@ def run_single_example(
     explain: bool = True,
     show_derived_label: str = "Derived answer",
     show_expected_label: str = "Expected",
-) -> PipelineResult:
+    pipeline_runner: Optional[Callable[[str], Any]] = None,
+) -> Any:
     """
     Run the full pipeline on a single example and print results.
 
@@ -78,15 +78,17 @@ def run_single_example(
     if problem is None:
         raise ValueError("Example must have a 'problem' attribute.")
 
-    llm_config = load_openrouter_config(temperature=temperature)
-    llm = LLMClient(llm_config)
-    cfg = PipelineConfig(max_steps=max_steps, explain=explain)
-
-    result = run_pipeline(
-        problem=problem,
-        llm=llm,
-        config=cfg,
-    )
+    if pipeline_runner is None:
+        llm_config = load_openrouter_config(temperature=temperature)
+        llm = LLMClient(llm_config)
+        cfg = PipelineConfig(max_steps=max_steps, explain=explain)
+        result = run_pipeline(
+            problem=problem,
+            llm=llm,
+            config=cfg,
+        )
+    else:
+        result = pipeline_runner(problem)
 
     format_single_result(
         example,
@@ -101,7 +103,7 @@ def run_single_example(
 
 def evaluate_examples(
     examples: Iterable[Any],
-    validator: Callable[[PipelineResult], Optional[T]],
+    validator: Callable[[Any], Optional[T]],
     success_measure: Callable[[Any, Optional[Any]], bool],
     *,
     max_steps: int = 8,
@@ -109,6 +111,7 @@ def evaluate_examples(
     show_derived_label: str = "Derived answer",
     show_expected_label: str = "Expected",
     llm: Optional[LLMClient] = None,
+    pipeline_runner: Optional[Callable[[str], Any]] = None,
 ) -> None:
     """
     Run the pipeline over a collection of examples and print a simple accuracy summary.
@@ -119,6 +122,7 @@ def evaluate_examples(
     """
     client = llm or LLMClient()
     cfg = PipelineConfig(max_steps=max_steps, explain=explain)
+    runner = pipeline_runner
 
     total = 0
     correct = 0
@@ -129,11 +133,14 @@ def evaluate_examples(
             raise ValueError(f"Example {ex} has no 'problem' attribute.")
         
         try:
-            result = run_pipeline(
-                problem=problem,
-                llm=client,
-                config=cfg,
-            )
+            if runner is None:
+                result = run_pipeline(
+                    problem=problem,
+                    llm=client,
+                    config=cfg,
+                )
+            else:
+                result = runner(problem)
 
             obtained = validator(result)
             is_correct = success_measure(ex, obtained)

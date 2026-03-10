@@ -15,6 +15,7 @@ from typing import Iterable, Optional
 from llm_prolog.symbolic.types import Fact, PipelineResult
 
 from eval.eval_common import evaluate_examples, run_single_example
+from eval.eval_suite import PipelineMode, SimpleEvalTask
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,7 @@ EXAMPLE_6 = GSM8KExample(
 )
 
 
-def gsm8k_validator(result: PipelineResult) -> Optional[int]:
+def gsm8k_nlsymbol_validator(result: PipelineResult) -> Optional[int]:
     """Extract the derived numeric answer from the pipeline result (GSM8K format)."""
     answer = result.extract_answer_constant()
     if answer is None:
@@ -85,6 +86,58 @@ def gsm8k_validator(result: PipelineResult) -> Optional[int]:
         return int(answer)
     except ValueError:
         return None
+
+
+def _gsm8k_validator_symbolic_hybrid(result: object) -> Optional[int]:
+    """
+    Helper validator for PipelineMode.SYMBOLIC_HYBRID.
+    Expects a PipelineResult and extracts the numeric answer via constants.
+    """
+    if not hasattr(result, "extract_answer_constant"):
+        return None
+    try:
+        return gsm8k_nlsymbol_validator(result)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
+def _gsm8k_validator_text_answer(result: object) -> Optional[int]:
+    """
+    Helper for text-only pipelines (e.g. COT_BASELINE, COC_BASELINE, FULL_NL_PIPELINE).
+    Attempts to parse the final integer from the free-form answer text.
+    """
+    answer_text = getattr(result, "answer_text", None)
+    if not isinstance(answer_text, str):
+        return None
+
+    import re
+
+    nums = re.findall(r"[-+]?\d+", answer_text)
+    if not nums:
+        return None
+    try:
+        return int(nums[-1])
+    except ValueError:
+        return None
+
+
+def gsm8k_main_validator(result: object, mode: PipelineMode) -> Optional[int]:
+    """
+    Main GSM8K validator that dispatches on PipelineMode.
+
+    - SYMBOLIC_HYBRID: use the symbolic PipelineResult helper.
+    - COT_BASELINE / COC_BASELINE / FULL_NL_PIPELINE: use text-based parsing.
+    """
+    if mode is PipelineMode.SYMBOLIC_HYBRID:
+        return _gsm8k_validator_symbolic_hybrid(result)
+    if mode in {
+        PipelineMode.COT_BASELINE,
+        PipelineMode.COC_BASELINE,
+        PipelineMode.FULL_NL_PIPELINE,
+    }:
+        return _gsm8k_validator_text_answer(result)
+    # Fallback: be conservative if a new mode is added.
+    return None
 
 
 def gsm8k_success_measure(example: GSM8KExample, obtained: Optional[int]) -> bool:
@@ -96,7 +149,7 @@ def run_single_example_gsm8k(example: GSM8KExample = EXAMPLE_1) -> None:
     """Run the pipeline on a single GSM8K example and print results."""
     run_single_example(
         example,
-        gsm8k_validator,
+        gsm8k_nlsymbol_validator,
         gsm8k_success_measure,
         show_derived_label="Derived numeric answer",
         show_expected_label="Ground truth",
@@ -111,7 +164,7 @@ def evaluate_gsm8k(
     """Run the pipeline over GSM8K examples and print accuracy summary."""
     evaluate_examples(
         examples,
-        gsm8k_validator,
+        gsm8k_nlsymbol_validator,
         gsm8k_success_measure,
         max_steps=max_steps,
         show_derived_label="Derived numeric answer",
@@ -128,3 +181,38 @@ if __name__ == "__main__":
         ],
         max_steps=20,
     )
+
+
+# ---------------------------------------------------------------------------
+# Suite integration: task registry
+# ---------------------------------------------------------------------------
+
+
+SIZE_OPTIONS = ("20", "all")
+
+
+def load_gsm8k_examples(size: str) -> list[GSM8KExample]:
+    # TODO: Replace with real GSM8K loading. For now, expose a stable interface.
+    demo = [EXAMPLE_1, EXAMPLE_2, EXAMPLE_3, EXAMPLE_4, EXAMPLE_5, EXAMPLE_6]
+    if size == "20":
+        return demo[: min(20, len(demo))]
+    if size == "all":
+        return demo
+    raise ValueError(f"Unknown GSM8K size option: {size!r}")
+
+
+def get_tasks() -> list[SimpleEvalTask]:
+    tasks: list[SimpleEvalTask] = []
+    for size in SIZE_OPTIONS:
+        tasks.append(
+            SimpleEvalTask(
+                task_id=f"gsm8k:{size}",
+                examples=load_gsm8k_examples(size),
+                validator_fn=gsm8k_main_validator,
+                success_measure_fn=gsm8k_success_measure,
+            )
+        )
+    return tasks
+
+
+TASKS = {t.task_id: t for t in get_tasks()}

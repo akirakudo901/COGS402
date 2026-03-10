@@ -20,6 +20,7 @@ from typing import Iterable, List, Optional
 from llm_prolog.symbolic.types import PipelineResult
 
 from eval.eval_common import evaluate_examples, run_single_example
+from eval.eval_suite import PipelineMode, SimpleEvalTask
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +153,52 @@ def entailmentbank_validator(result: PipelineResult) -> EntailmentBankObtained:
     )
 
 
+def _entailmentbank_validator_symbolic_hybrid(result: object) -> EntailmentBankObtained:
+    """
+    Helper validator for PipelineMode.SYMBOLIC_HYBRID.
+    Expects a PipelineResult-like object with 'success' and 'answer_premise'.
+    """
+    if not (hasattr(result, "success") and hasattr(result, "answer_premise")):
+        return EntailmentBankObtained(success=False, derived_answer=None)
+    try:
+        return entailmentbank_validator(result)  # type: ignore[arg-type]
+    except Exception:
+        return EntailmentBankObtained(success=False, derived_answer=None)
+
+
+def _entailmentbank_validator_text_answer(result: object) -> EntailmentBankObtained:
+    """
+    Helper for text-only pipelines (e.g. COT_BASELINE, COC_BASELINE, FULL_NL_PIPELINE).
+    Interprets the free-form answer text as the derived hypothesis string.
+    """
+    answer_text = getattr(result, "answer_text", None)
+    if not isinstance(answer_text, str):
+        return EntailmentBankObtained(success=False, derived_answer=None)
+    return EntailmentBankObtained(success=True, derived_answer=answer_text.strip())
+
+
+def entailmentbank_main_validator(
+    result: object,
+    mode: PipelineMode,
+) -> EntailmentBankObtained:
+    """
+    Main EntailmentBank validator that dispatches on PipelineMode.
+
+    - SYMBOLIC_HYBRID: use the symbolic PipelineResult helper.
+    - COT_BASELINE / COC_BASELINE / FULL_NL_PIPELINE: use text-based parsing.
+    """
+    if mode is PipelineMode.SYMBOLIC_HYBRID:
+        return _entailmentbank_validator_symbolic_hybrid(result)
+    if mode in {
+        PipelineMode.COT_BASELINE,
+        PipelineMode.COC_BASELINE,
+        PipelineMode.FULL_NL_PIPELINE,
+    }:
+        return _entailmentbank_validator_text_answer(result)
+    # Fallback for unknown future modes.
+    return EntailmentBankObtained(success=False, derived_answer=None)
+
+
 def entailmentbank_success_measure(
     example: EntailmentBankEvalCase,
     obtained: Optional[EntailmentBankObtained],
@@ -161,7 +208,18 @@ def entailmentbank_success_measure(
     """
     if obtained is None:
         return False
-    return obtained.success
+    if not obtained.success:
+        return False
+    # For CoT baseline, we treat it as correct if it matches the hypothesis
+    # by substring in either direction (best-effort; dataset-specific scoring
+    # can be refined later).
+    if obtained.derived_answer is None:
+        return True
+    hyp = (example.hypothesis or "").strip().lower()
+    derived = (obtained.derived_answer or "").strip().lower()
+    if not hyp or not derived:
+        return True
+    return hyp in derived or derived in hyp
 
 
 # ---------------------------------------------------------------------------
@@ -429,3 +487,37 @@ if __name__ == "__main__":
         print("  python -m test.eval_entailmentbank <path-to.jsonl> [gold_only|with_distractors]")
         print("\nRunning demo: gold_only with 2 built-in examples.\n")
         evaluate_entailmentbank_gold_only(demo_examples, max_steps=10)
+
+
+# ---------------------------------------------------------------------------
+# Suite integration: task registry
+# ---------------------------------------------------------------------------
+
+
+VARIANTS = ("gold_only", "with_distractors")
+
+
+def load_entailmentbank_eval_cases(variant: str) -> list[EntailmentBankEvalCase]:
+    demo_examples = [EXAMPLE_ENTAILMENTBANK_1, EXAMPLE_ENTAILMENTBANK_2]
+    if variant == "gold_only":
+        return to_eval_cases(demo_examples, gold_only=True)
+    if variant == "with_distractors":
+        return to_eval_cases(demo_examples, gold_only=False)
+    raise ValueError(f"Unknown EntailmentBank variant: {variant!r}")
+
+
+def get_tasks() -> list[SimpleEvalTask]:
+    tasks: list[SimpleEvalTask] = []
+    for variant in VARIANTS:
+        tasks.append(
+            SimpleEvalTask(
+                task_id=f"entailmentbank:{variant}",
+                examples=load_entailmentbank_eval_cases(variant),
+                validator_fn=entailmentbank_main_validator,
+                success_measure_fn=entailmentbank_success_measure,
+            )
+        )
+    return tasks
+
+
+TASKS = {t.task_id: t for t in get_tasks()}
