@@ -122,32 +122,35 @@ def evaluate_examples(
 
     total = 0
     correct = 0
-    for ex in examples:
+    for i, ex in enumerate(examples):
         total += 1
         problem = getattr(ex, "problem", None)
         if problem is None:
             raise ValueError(f"Example {ex} has no 'problem' attribute.")
+        
+        try:
+            result = run_pipeline(
+                problem=problem,
+                llm=client,
+                config=cfg,
+            )
 
-        result = run_pipeline(
-            problem=problem,
-            llm=client,
-            config=cfg,
-        )
+            obtained = validator(result)
+            is_correct = success_measure(ex, obtained)
+            if is_correct:
+                correct += 1
 
-        obtained = validator(result)
-        is_correct = success_measure(ex, obtained)
-        if is_correct:
-            correct += 1
-
-        format_single_result(
-            ex,
-            result,
-            validator,
-            success_measure,
-            show_derived_label=show_derived_label,
-            show_expected_label=show_expected_label,
-        )
-        print("-----")
+            format_single_result(
+                ex,
+                result,
+                validator,
+                success_measure,
+                show_derived_label=show_derived_label,
+                show_expected_label=show_expected_label,
+            )
+            print("-----")
+        except Exception as e:
+            print(f"Example {i} failed due to error: {e}")
 
     if total > 0:
         accuracy = correct / total
