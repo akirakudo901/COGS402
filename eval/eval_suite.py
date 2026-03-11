@@ -200,6 +200,9 @@ class EvaluationSuite:
                          if role not in self.model_by_role.mapping]
         if missing_roles:
             raise ValueError(f"model_by_role is missing mappings for roles: {missing_roles}")
+        # also indicate that keep_all_outcomes takes precedence over keep_random_k
+        if self.keep_all_outcomes and self.keep_random_k:
+            print("With both keep_all_outcomes and keep_random_k set, the former takes precedence.")
 
     def _make_llm(self) -> LLMClient:
         # The per-role ModelSpec is passed per request via LLMClient overrides.
