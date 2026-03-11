@@ -185,8 +185,8 @@ class SimpleEvalTask:
     def load_examples(self) -> Iterable[Any]:
         return self.examples
 
-    def validator(self, result: Any) -> Optional[Any]:
-        return self.validator_fn(result)
+    def validator(self, result: Any, mode: PipelineMode) -> Optional[Any]:
+        return self.validator_fn(result, mode)
 
     def success_measure(self, example: Any, obtained: Optional[Any]) -> bool:
         return self.success_measure_fn(example, obtained)
