@@ -134,6 +134,16 @@ class ExampleOutcome:
     correct: bool
     error: Optional[str] = None
 
+    def __str__(self) -> str:
+        lines = []
+        lines.append(f"Index {self.idx}, Example ID {self.example_id}.")
+        lines.append(f"  Problem: {self.problem}")
+        lines.append(f"  Expected '{self.expected}', got '{self.obtained}': " + 
+                      ('' if self.correct else 'in') + "correct.")
+        if not self.correct:
+            lines.append(f"  Reason for error: {self.error}")
+        return "\n".join(lines)
+
 
 @dataclass(frozen=True)
 class TaskReport:
@@ -144,6 +154,21 @@ class TaskReport:
     accuracy: float
     outcomes: Tuple[ExampleOutcome, ...] = ()
     extra_stats: Dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        lines = []
+        lines.append(f"Task {self.task_id} (mode={self.pipeline_mode.name}):")
+        lines.append(f"  Got {self.correct} / {self.total} correct; {self.accuracy} accuracy.")
+        lines.append(f"  Outcomes:")
+        for eo in self.outcomes:
+            lines.append("-"*10)
+            lines.append(str(eo))
+            lines.append("-"*10)
+        if self.extra_stats:
+            lines.append("="*10)
+            lines.append(f" Extra Stats: {self.extra_stats}")
+            lines.append("="*10)
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -156,6 +181,16 @@ class SuiteReport:
         totals = sum(r.total for r in self.task_reports)
         correct = sum(r.correct for r in self.task_reports)
         return (correct / totals) if totals else 0.0
+    
+    def __str__(self) -> str:
+        lines = []
+        for tr in self.task_reports:
+            lines.append("#"*10)
+            lines.append(str(tr))
+            lines.append("#"*10)
+        lines.append(f"Overall Accuracy: {self.overall_accuracy}")
+        return "\n".join(lines)
+
 
 
 PipelineRunner = Callable[[str], Any]
