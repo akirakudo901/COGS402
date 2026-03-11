@@ -130,7 +130,7 @@ def gsm8k_main_validator(result: object, mode: PipelineMode) -> Optional[float]:
     - SYMBOLIC_HYBRID: use the symbolic PipelineResult helper.
     - COT_BASELINE / COC_BASELINE / FULL_NL_PIPELINE: use text-based parsing.
     """
-    if mode is PipelineMode.SYMBOLIC_HYBRID:
+    if mode == PipelineMode.SYMBOLIC_HYBRID:
         return _gsm8k_validator_symbolic_hybrid(result)
     if mode in {
         PipelineMode.COT_BASELINE,
