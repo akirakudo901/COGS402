@@ -237,6 +237,7 @@ class SimpleEvalTask:
 
 @dataclass
 class EvaluationSuite:
+    name: str
     tasks: Sequence[EvalTask[Any, Any]]
     pipeline_mode: PipelineMode
     model_by_role: ModelMapping
@@ -255,6 +256,32 @@ class EvaluationSuite:
         # also indicate that keep_all_outcomes takes precedence over keep_random_k
         if self.keep_all_outcomes and self.keep_random_k:
             print("With both keep_all_outcomes and keep_random_k set, the former takes precedence.")
+    
+    def get_description(self) -> str:
+        def _spec_to_model_name(spec : ModelSpec) -> str:
+            return spec.model.split("/")[-1].strip()
+        
+        out = ""
+        # pipeline mode
+        out += f"{self.pipeline_mode.name} mode"
+        # roles
+        out += " with "
+        required_roles = self.pipeline_mode.get_required_roles()
+        role_str, name_to_roles_map = [], {}
+        
+        for role, spec in self.model_by_role.items():
+            if role in required_roles:
+                model_name = _spec_to_model_name(spec)
+                name_to_roles_map[model_name] = name_to_roles_map.get(model_name, []) + [role]
+        
+        for name, roles in name_to_roles_map.items():
+            agg_roles_str = ' & '.join([r.name for r in roles])
+            role_str.append(f"{agg_roles_str} : {name}")
+        
+        out += ";".join(role_str)
+        # tasks
+        out += " on (" + ', '.join([t.task_id for t in self.tasks]) + ")"
+        return out
 
     def _make_llm(self) -> LLMClient:
         # The per-role ModelSpec is passed per request via LLMClient overrides.
