@@ -162,7 +162,7 @@ class EvaluationSuite:
     pipeline_mode: PipelineMode
     model_by_role: ModelMapping
     prompt_overrides: PromptOverrides = field(default_factory=dict)
-    pipeline_cfg: PipelineConfig = PipelineConfig(max_steps=8, explain=False)
+    pipeline_cfg: PipelineConfig = field(default_factory=PipelineConfig)
     keep_all_outcomes: bool = False
     keep_random_k: int = 0
     seed: int = 0
