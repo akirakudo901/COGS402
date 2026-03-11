@@ -67,8 +67,23 @@ class ModelSpec:
 PromptOverrides = Mapping[LLMRole, str]
 
 @dataclass
-class ModelMapping:
+class ModelMapping(Mapping[LLMRole, ModelSpec]):
     mapping: dict[LLMRole, ModelSpec] = field(default_factory=dict)
+
+    def __getitem__(self, key: LLMRole) -> ModelSpec:
+        return self.mapping[key]
+
+    def __iter__(self):
+        return iter(self.mapping)
+
+    def __len__(self):
+        return len(self.mapping)
+
+    def __contains__(self, key):
+        return key in self.mapping
+    
+    def items(self):
+        return self.mapping.items()
 
     @classmethod
     def set_spec_to_all_roles(
