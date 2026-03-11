@@ -194,6 +194,13 @@ class EvaluationSuite:
     keep_random_k: int = 0
     seed: int = 0
 
+    def __post_init__(self):
+        # Ensure model_by_role contains a mapping for all roles (in LLMRole)
+        missing_roles = [role for role in self.pipeline_mode.get_required_roles() 
+                         if role not in self.model_by_role.mapping]
+        if missing_roles:
+            raise ValueError(f"model_by_role is missing mappings for roles: {missing_roles}")
+
     def _make_llm(self) -> LLMClient:
         # The per-role ModelSpec is passed per request via LLMClient overrides.
         return LLMClient()
