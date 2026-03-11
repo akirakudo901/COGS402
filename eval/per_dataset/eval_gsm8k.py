@@ -23,7 +23,7 @@ from eval.eval_suite import PipelineMode, SimpleEvalTask
 @dataclass(frozen=True)
 class GSM8KExample:
     problem: str
-    ground_truth: int
+    ground_truth: float
 
 
 EXAMPLE_1 = GSM8KExample(
@@ -31,7 +31,7 @@ EXAMPLE_1 = GSM8KExample(
         "Alice has 3 apples. She buys 5 more apples at the store. "
         "How many apples does Alice have now?"
     ),
-    ground_truth=8,
+    ground_truth=8.0,
 )
 
 EXAMPLE_2 = GSM8KExample(
@@ -39,7 +39,7 @@ EXAMPLE_2 = GSM8KExample(
         "Kendra has 3 more than twice as many berries as Sam. Sam has half as many berries as Martha. "
         "If Martha has 40 berries, how many berries does Kendra have?"
     ),
-    ground_truth=43,
+    ground_truth=43.0,
 )
 
 EXAMPLE_3 = GSM8KExample(
@@ -47,7 +47,7 @@ EXAMPLE_3 = GSM8KExample(
         "Katy makes coffee using teaspoons of sugar and cups of water in the ratio of 7:13. "
         "If she used a total of 120 teaspoons of sugar and cups of water, calculate the number of teaspoonfuls of sugar she used."
     ),
-    ground_truth=42,
+    ground_truth=42.0,
 )
 
 EXAMPLE_4 = GSM8KExample(
@@ -55,7 +55,7 @@ EXAMPLE_4 = GSM8KExample(
         "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May."
         "How many clips did Natalia sell altogether in April and May?"
     ),
-    ground_truth=72,
+    ground_truth=72.0,
 )
 
 EXAMPLE_5 = GSM8KExample(
@@ -64,7 +64,7 @@ EXAMPLE_5 = GSM8KExample(
         "His work is 20 miles away. He also goes for a weekend bike ride of 200 miles."
         "If he can bike at 25 mph how much time does he spend biking a week?"
     ),
-    ground_truth=16,
+    ground_truth=16.0,
 )
 
 EXAMPLE_6 = GSM8KExample(
@@ -75,22 +75,22 @@ EXAMPLE_6 = GSM8KExample(
         "3/5 of them were irrelevant. How many valuable files was he left with after deleting"
         "the unrelated files he downloaded in the second round?"
     ),
-    ground_truth=400,
+    ground_truth=400.0,
 )
 
 
-def gsm8k_nlsymbol_validator(result: PipelineResult) -> Optional[int]:
+def gsm8k_nlsymbol_validator(result: PipelineResult) -> Optional[float]:
     """Extract the derived numeric answer from the pipeline result (GSM8K format)."""
     answer = result.extract_answer_constant()
     if answer is None:
         return None
     try:
-        return int(answer)
+        return float(answer)
     except ValueError:
         return None
 
 
-def _gsm8k_validator_symbolic_hybrid(result: object) -> Optional[int]:
+def _gsm8k_validator_symbolic_hybrid(result: object) -> Optional[float]:
     """
     Helper validator for PipelineMode.SYMBOLIC_HYBRID.
     Expects a PipelineResult and extracts the numeric answer via constants.
@@ -103,7 +103,7 @@ def _gsm8k_validator_symbolic_hybrid(result: object) -> Optional[int]:
         return None
 
 
-def _gsm8k_validator_text_answer(result: object) -> Optional[int]:
+def _gsm8k_validator_text_answer(result: object) -> Optional[float]:
     """
     Helper for text-only pipelines (e.g. COT_BASELINE, COC_BASELINE, FULL_NL_PIPELINE).
     Attempts to parse the final integer from the free-form answer text.
@@ -118,12 +118,12 @@ def _gsm8k_validator_text_answer(result: object) -> Optional[int]:
     if not nums:
         return None
     try:
-        return int(nums[-1])
+        return float(nums[-1])
     except ValueError:
         return None
 
 
-def gsm8k_main_validator(result: object, mode: PipelineMode) -> Optional[int]:
+def gsm8k_main_validator(result: object, mode: PipelineMode) -> Optional[float]:
     """
     Main GSM8K validator that dispatches on PipelineMode.
 
@@ -142,7 +142,7 @@ def gsm8k_main_validator(result: object, mode: PipelineMode) -> Optional[int]:
     return None
 
 
-def gsm8k_success_measure(example: GSM8KExample, obtained: Optional[int]) -> bool:
+def gsm8k_success_measure(example: GSM8KExample, obtained: Optional[float]) -> bool:
     """Success = exact match of integer answer."""
     return obtained is not None and obtained == example.ground_truth
 
@@ -211,7 +211,7 @@ splits = {
 
 def _parse_groundtruth_from_answer(
     full_answer : str,
-) -> int:
+) -> float:
     """
     Parse the ground-truth from an answer interleaving NL, equations and the final answer; e.g.
 
@@ -223,11 +223,13 @@ def _parse_groundtruth_from_answer(
     if len(answer_parts) != 2:
         raise Exception("Simple parse failed to get ground-truth answer from GSM8K example. "
                         f"Failing answer string: {full_answer}")
+    
+    number_str = answer_parts[1].strip().replace(',', '')
     try:
-        return int(answer_parts[1])
+        return float(number_str)
     except:
         raise Exception("Failed parsing ground-truth answer for GSM8K example; "
-                        f"'{answer_parts[1]}' can't be parsed into an integer.")
+                        f"'{number_str}' can't be parsed into an integer.")
 
 
 def load_gsm8k_examples(
@@ -260,10 +262,10 @@ def load_gsm8k_examples(
     examples = []
     for i in indices:
         row = df.iloc[i]
-        int_gt = _parse_groundtruth_from_answer(row["answer"])
+        float_gt = _parse_groundtruth_from_answer(row["answer"])
         ex = GSM8KExample(
-            question=row["question"],
-            answer=int_gt,
+            problem=row["question"],
+            ground_truth=float_gt,
         )
         examples.append(ex)
     return examples
@@ -287,11 +289,18 @@ TASKS = {t.task_id: t for t in get_tasks()}
 
 
 if __name__ == "__main__":
-    evaluate_gsm8k(
-        examples=[
-            EXAMPLE_1,
-            EXAMPLE_5,
-            EXAMPLE_6,
-        ],
-        max_steps=20,
+    # evaluate_gsm8k(
+    #     examples=[
+    #         EXAMPLE_1,
+    #         EXAMPLE_5,
+    #         EXAMPLE_6,
+    #     ],
+    #     max_steps=20,
+    # )
+
+    examples = load_gsm8k_examples(
+        size=5, seed=42, from_train_split=True
     )
+
+    for i, ex in enumerate(examples):
+        print(f"Example {i}: {ex}")
