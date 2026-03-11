@@ -65,7 +65,22 @@ class ModelSpec:
 
 
 PromptOverrides = Mapping[LLMRole, str]
-ModelMapping = Mapping[LLMRole, ModelSpec]
+
+@dataclass
+class ModelMapping:
+    mapping: dict[LLMRole, ModelSpec] = field(default_factory=dict)
+
+    @classmethod
+    def set_spec_to_all_roles(
+        cls, 
+        spec : ModelSpec, 
+        mode : PipelineMode = None
+    ) -> "ModelMapping":
+        if mode is None:
+            roles_to_fill = [role for role in LLMRole]
+        else:
+            roles_to_fill = mode.get_required_roles()
+        return cls(mapping=dict((role, spec) for role in roles_to_fill))
 
 TObtained = TypeVar("TObtained")
 TExample = TypeVar("TExample")
