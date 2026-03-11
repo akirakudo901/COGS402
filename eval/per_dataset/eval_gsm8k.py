@@ -269,7 +269,7 @@ def load_gsm8k_examples(
     return examples
 
 
-def get_tasks(seed : int) -> list[SimpleEvalTask]:
+def get_tasks(seed : int = 42) -> list[SimpleEvalTask]:
     tasks: list[SimpleEvalTask] = []
     for size in SIZE_OPTIONS:
         tasks.append(
