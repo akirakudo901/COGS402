@@ -131,6 +131,7 @@ class ExampleOutcome:
     problem: str
     expected: str
     obtained: str
+    result: Any
     correct: bool
     error: Optional[str] = None
 
@@ -140,6 +141,7 @@ class ExampleOutcome:
         lines.append(f"  Problem: {self.problem}")
         lines.append(f"  Expected '{self.expected}', got '{self.obtained}': " + 
                       ('' if self.correct else 'in') + "correct.")
+        lines.append(f"  Pipeline Result (of Any type): {self.result}")
         if not self.correct:
             lines.append(f"  Reason for error: {self.error}")
         return "\n".join(lines)
@@ -306,6 +308,7 @@ class EvaluationSuite:
                     problem=problem,
                     expected=expected,
                     obtained=obtained_str,
+                    result=result,
                     correct=ok,
                     error=None,
                 )
@@ -316,6 +319,7 @@ class EvaluationSuite:
                     problem=problem,
                     expected=expected,
                     obtained="",
+                    result=None,
                     correct=False,
                     error=str(e),
                 )
