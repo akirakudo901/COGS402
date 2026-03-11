@@ -143,7 +143,7 @@ def gsm8k_main_validator(result: object, mode: PipelineMode) -> Optional[float]:
 
 
 def gsm8k_success_measure(example: GSM8KExample, obtained: Optional[float]) -> bool:
-    """Success = exact match of integer answer."""
+    """Success = exact match of float answer."""
     return obtained is not None and obtained == example.ground_truth
 
 
