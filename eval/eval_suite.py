@@ -37,6 +37,18 @@ class PipelineMode(str, Enum):
     COC_BASELINE = "coc_baseline"
     FULL_NL_PIPELINE = "full_nl_pipeline"
 
+    def get_required_roles(self) -> List[LLMRole]:
+        if self == PipelineMode.SYMBOLIC_HYBRID:
+            return [LLMRole.NL_TO_SYMBOL, LLMRole.SELECTOR, LLMRole.SYMBOL_TO_NL]
+        elif self == PipelineMode.COT_BASELINE:
+            return [LLMRole.COT_SOLVER]
+        elif self == PipelineMode.COC_BASELINE:
+            print("get_required_roles for COC_BASELINE mode is yet to be implemented.")
+            return []
+        elif self == PipelineMode.FULL_NL_PIPELINE:
+            print("get_required_roles for FULL_NL_PIPELINE mode is yet to be implemented.")
+            return []
+
 
 class LLMRole(str, Enum):
     NL_TO_SYMBOL = "nl_to_symbol"
