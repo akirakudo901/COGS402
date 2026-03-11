@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+import pandas as pd
+
 from llm_prolog.symbolic.types import Fact, PipelineResult
 
 from eval.eval_common import evaluate_examples, run_single_example
@@ -172,30 +174,108 @@ def evaluate_gsm8k(
     )
 
 # ---------------------------------------------------------------------------
-# Suite integration: task registry
+# Loading the gsm8k files from Hugging Face
+# Also, suite integration: task registry
 # ---------------------------------------------------------------------------
 
+"""
+The GSM8K dataset holds 7473 question answer pairs within 'train'! Each entry under the 'question' column 
+is a specific question, which natural language answer can be found in the corresponding row under 'answer'.
+
+The answer interleaves NL, equations and the final answer; e.g.
+
+    Natalia sold 48/2 = <<48/2=24>>24 clips in May. \
+    Natalia sold 48+24 = <<48+24=72>>72 clips altogether in April and May. \
+    #### 72
+
+>>> df.info()
+
+<class 'pandas.DataFrame'>
+RangeIndex: 7473 entries, 0 to 7472
+Data columns (total 2 columns):
+ #   Column    Non-Null Count  Dtype
+---  ------    --------------  -----
+ 0   question  7473 non-null   str  
+ 1   answer    7473 non-null   str  
+dtypes: str(2)
+memory usage: 3.8 MB
+"""
 
 SIZE_OPTIONS = ("20", "all")
 
 
-def load_gsm8k_examples(size: str) -> list[GSM8KExample]:
-    # TODO: Replace with real GSM8K loading. For now, expose a stable interface.
-    demo = [EXAMPLE_1, EXAMPLE_2, EXAMPLE_3, EXAMPLE_4, EXAMPLE_5, EXAMPLE_6]
-    if size == "20":
-        return demo[: min(20, len(demo))]
+splits = {
+    'train': 'main/train-00000-of-00001.parquet',
+    'test': 'main/test-00000-of-00001.parquet'
+}
+
+def _parse_groundtruth_from_answer(
+    full_answer : str,
+) -> int:
+    """
+    Parse the ground-truth from an answer interleaving NL, equations and the final answer; e.g.
+
+    Natalia sold 48/2 = <<48/2=24>>24 clips in May. \
+    Natalia sold 48+24 = <<48+24=72>>72 clips altogether in April and May. \
+    #### 72
+    """
+    answer_parts = full_answer.split("####")
+    if len(answer_parts) != 2:
+        raise Exception("Simple parse failed to get ground-truth answer from GSM8K example. "
+                        f"Failing answer string: {full_answer}")
+    try:
+        return int(answer_parts[1])
+    except:
+        raise Exception("Failed parsing ground-truth answer for GSM8K example; "
+                        f"'{answer_parts[1]}' can't be parsed into an integer.")
+
+
+def load_gsm8k_examples(
+    size: int | str,
+    seed: int = 42,
+    from_train_split: bool = True
+) -> list[GSM8KExample]:
+    """
+    Load specified number of examples from the specified split at random using the given seed.
+    'size' can be 'all', in which case all examples are returned.
+    """
+    import random
+
+    split = "train" if from_train_split else "test"
+    path = "hf://datasets/openai/gsm8k/" + splits[split]
+
+    df = pd.read_parquet(path)
+
     if size == "all":
-        return demo
-    raise ValueError(f"Unknown GSM8K size option: {size!r}")
+        indices = range(len(df))
+    elif isinstance(size, str) and size.isdigit() or isinstance(size, int):
+        size_int = int(size)
+        if size_int > len(df):
+            raise ValueError(f"Requested {size_int} examples, but only {len(df)} available in split '{split}'.")
+        rng = random.Random(seed)
+        indices = rng.sample(range(len(df)), size_int)
+    else:
+        raise ValueError(f"Unknown GSM8K size option: {size!r}")
+
+    examples = []
+    for i in indices:
+        row = df.iloc[i]
+        int_gt = _parse_groundtruth_from_answer(row["answer"])
+        ex = GSM8KExample(
+            question=row["question"],
+            answer=int_gt,
+        )
+        examples.append(ex)
+    return examples
 
 
-def get_tasks() -> list[SimpleEvalTask]:
+def get_tasks(seed : int) -> list[SimpleEvalTask]:
     tasks: list[SimpleEvalTask] = []
     for size in SIZE_OPTIONS:
         tasks.append(
             SimpleEvalTask(
                 task_id=f"gsm8k:{size}",
-                examples=load_gsm8k_examples(size),
+                examples=load_gsm8k_examples(size, seed=seed),
                 validator_fn=gsm8k_main_validator,
                 success_measure_fn=gsm8k_success_measure,
             )
