@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import (
     Any,
@@ -403,7 +404,7 @@ class EvaluationSuite:
             reports.append(self.run_task(task, runner=runner))
         return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
 
-    async def run_async(self, max_in_flight: int = 8) -> SuiteReport:
+    async def run_async(self, max_in_flight: int = 8, print_progress : bool = False) -> SuiteReport:
         """
         Run all tasks with concurrent pipelines; LLM calls are bounded by max_in_flight.
         Uses one shared AsyncLLMClient and LLMExecutor per suite run.
@@ -413,7 +414,7 @@ class EvaluationSuite:
             reports: List[TaskReport] = []
             for task in self.tasks:
                 report = await self.run_task_async(
-                    task, llm_exec=executor, max_in_flight=max_in_flight
+                    task, llm_exec=executor, max_in_flight=max_in_flight, print_progress=print_progress
                 )
                 reports.append(report)
         return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
@@ -424,6 +425,7 @@ class EvaluationSuite:
         *,
         llm_exec: LLMExecutor,
         max_in_flight: int = 8,
+        print_progress: bool = False
     ) -> TaskReport:
         """
         Run one task with each example in its own async pipeline; results aggregated by index.
@@ -439,13 +441,15 @@ class EvaluationSuite:
         async def run_one(i: int, ex: Any) -> Tuple[int, ExampleOutcome, bool]:
             problem, expected, example_id = _get_example_fields(task, ex, i)
             try:
+                if print_progress:
+                    print(f"Starting task {task.task_id}, example {example_id} at: {datetime.now().strftime('%H:%M:%S')}.")
                 result = await run_pipeline_mode_async(
                     problem=problem,
                     mode=self.pipeline_mode,
                     pipeline_cfg=self.pipeline_cfg,
                     llm_exec=llm_exec,
                     model_by_role=self.model_by_role,
-                    prompt_overrides=self.prompt_overrides,
+                    prompt_overrides=self.prompt_overrides
                 )
                 outcome, ok = _make_outcome_from_result(
                     task=task,
@@ -457,6 +461,8 @@ class EvaluationSuite:
                     expected=expected,
                     result=result,
                 )
+                if print_progress:
+                    print(f"Completed task {task.task_id}, example {example_id} without exception at: {datetime.now().strftime('%H:%M:%S')}.")
             except Exception as e:
                 outcome, ok = _make_outcome_from_exception(
                     idx=i,
@@ -465,6 +471,8 @@ class EvaluationSuite:
                     expected=expected,
                     exc=e,
                 )
+                if print_progress:
+                    print(f"Failed task {task.task_id}, example {example_id} with exception at: {datetime.now().strftime('%H:%M:%S')}.")
             return i, outcome, ok
 
         tasks = [run_one(i, ex) for i, ex in enumerate(examples)]
