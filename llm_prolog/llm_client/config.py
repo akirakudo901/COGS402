@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from dotenv import load_dotenv # for loading API keys from .env file
 
 OPENROUTER_BASE_URL_DEFAULT = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class OpenRouterConfig:
     api_key: str
     model: str = "openai/gpt-4.1-mini"
     base_url: str = OPENROUTER_BASE_URL_DEFAULT
+    credits_url: str = OPENROUTER_CREDITS_URL
     temperature: float = 0.2
     max_tokens: int | None = None
 
@@ -56,6 +58,7 @@ def load_openrouter_config(
         api_key=api_key,
         model=model or env_model or OpenRouterConfig.model,
         base_url=OPENROUTER_BASE_URL_DEFAULT,
+        credits_url=OPENROUTER_CREDITS_URL,
         temperature=temperature if temperature is not None else OpenRouterConfig.temperature,
         max_tokens=max_tokens,
     )

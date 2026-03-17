@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import requests
+
 from .config import OpenRouterConfig, load_openrouter_config
 
 ChatMessage = Dict[str, str]
@@ -50,6 +52,29 @@ class BaseLLMClient:
     def new_conversation(self, system_prompt: str) -> Conversation:
         """Create a reusable conversation handle."""
         return Conversation(system_prompt=system_prompt)
+    
+    def get_credits_usage_balance(self) -> Dict[str, Any]:
+        """
+        Fetch current OpenRouter credits and compute remaining balance.
+
+        Requires a management key; non-management keys may receive 403.
+        Returns a dict with keys: total_credits, total_usage, balance, raw.
+        """
+        headers = self._build_headers()
+        resp = requests.get(self.config.credits_url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        raw: Dict[str, Any] = resp.json()
+        data = raw.get("data") or {}
+
+        total_credits = float(data.get("total_credits", 0.0))
+        total_usage = float(data.get("total_usage", 0.0))
+
+        return {
+            "total_credits": total_credits,
+            "total_usage": total_usage,
+            "balance": total_credits - total_usage,
+            "raw": raw,
+        }
 
     # ------------------------------------------------------------------
     # Request construction helpers
