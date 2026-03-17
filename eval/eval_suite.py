@@ -10,6 +10,7 @@ See 'brainstorming', 'eval_suite_plan.md' for more details.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -26,8 +27,10 @@ from typing import (
     TypeVar,
 )
 
+from llm_prolog.llm_client.async_llm_client import AsyncLLMClient
 from llm_prolog.llm_client.llm_client import LLMClient
-from llm_prolog.pipeline import PipelineConfig
+from llm_prolog.llm_executor import LLMExecutor
+from llm_prolog.pipeline import PipelineConfig, run_pipeline_mode_async
 
 
 class PipelineMode(str, Enum):
@@ -198,6 +201,96 @@ class SuiteReport:
 PipelineRunner = Callable[[str], Any]
 
 
+def _get_example_fields(task: EvalTask[Any, Any], ex: Any, idx: int) -> Tuple[str, str, str]:
+    problem = task.problem_str(ex)
+    expected = task.expected_repr(ex)
+    example_id = str(getattr(ex, "id", idx))
+    return problem, expected, example_id
+
+
+def _make_outcome_from_result(
+    *,
+    task: EvalTask[Any, Any],
+    pipeline_mode: PipelineMode,
+    ex: Any,
+    idx: int,
+    example_id: str,
+    problem: str,
+    expected: str,
+    result: Any,
+) -> Tuple[ExampleOutcome, bool]:
+    obtained_val = task.validator(result, pipeline_mode)
+    ok = task.success_measure(ex, obtained_val)
+    outcome = ExampleOutcome(
+        idx=idx,
+        example_id=example_id,
+        problem=problem,
+        expected=expected,
+        obtained=str(obtained_val),
+        result=result,
+        correct=ok,
+        error=None,
+    )
+    return outcome, ok
+
+
+def _make_outcome_from_exception(
+    *,
+    idx: int,
+    example_id: str,
+    problem: str,
+    expected: str,
+    exc: Exception,
+) -> Tuple[ExampleOutcome, bool]:
+    outcome = ExampleOutcome(
+        idx=idx,
+        example_id=example_id,
+        problem=problem,
+        expected=expected,
+        obtained="",
+        result=None,
+        correct=False,
+        error=str(exc),
+    )
+    return outcome, False
+
+
+def _placeholder_outcome(idx: int) -> ExampleOutcome:
+    return ExampleOutcome(
+        idx=idx,
+        example_id=str(idx),
+        problem="",
+        expected="",
+        obtained="",
+        result=None,
+        correct=False,
+        error="Missing async outcome",
+    )
+
+
+def _collect_outcomes_in_order(
+    *,
+    outcomes_in_order: Sequence[ExampleOutcome],
+    rng,
+    keep_all_outcomes: bool,
+    keep_random_k: int,
+) -> List[ExampleOutcome]:
+    outcomes_collect: List[ExampleOutcome] = []
+    seen = 0
+    for outcome in outcomes_in_order:
+        seen += 1
+        if keep_all_outcomes:
+            outcomes_collect.append(outcome)
+        elif keep_random_k and len(outcomes_collect) < keep_random_k:
+            outcomes_collect.append(outcome)
+        elif keep_random_k and keep_random_k > 0:
+            # Reservoir sampling.
+            j = rng.randint(0, seen - 1)
+            if j < keep_random_k:
+                outcomes_collect[j] = outcome
+    return outcomes_collect
+
+
 def default_problem_str(example: Any) -> str:
     problem = getattr(example, "problem", None)
     if not isinstance(problem, str):
@@ -310,56 +403,87 @@ class EvaluationSuite:
             reports.append(self.run_task(task, runner=runner))
         return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
 
-    def run_task(self, task: EvalTask[Any, Any], *, runner: PipelineRunner) -> TaskReport:
+    async def run_async(self, max_in_flight: int = 8) -> SuiteReport:
+        """
+        Run all tasks with concurrent pipelines; LLM calls are bounded by max_in_flight.
+        Uses one shared AsyncLLMClient and LLMExecutor per suite run.
+        """
+        async with AsyncLLMClient() as client:
+            executor = LLMExecutor(client, max_in_flight=max_in_flight)
+            reports: List[TaskReport] = []
+            for task in self.tasks:
+                report = await self.run_task_async(
+                    task, llm_exec=executor, max_in_flight=max_in_flight
+                )
+                reports.append(report)
+        return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
+
+    async def run_task_async(
+        self,
+        task: EvalTask[Any, Any],
+        *,
+        llm_exec: LLMExecutor,
+        max_in_flight: int = 8,
+    ) -> TaskReport:
+        """
+        Run one task with each example in its own async pipeline; results aggregated by index.
+        """
         import random
 
         rng = random.Random(self.seed)
-        outcomes: List[ExampleOutcome] = []
-        total = 0
-        correct = 0
+        examples = list(task.load_examples())
+        total = len(examples)
+        ordered_outcomes: List[Optional[ExampleOutcome]] = [None] * total
+        ordered_correct: List[bool] = [False] * total
 
-        for i, ex in enumerate(task.load_examples()):
-            total += 1
-            problem = task.problem_str(ex)
-            expected = task.expected_repr(ex)
+        async def run_one(i: int, ex: Any) -> Tuple[int, ExampleOutcome, bool]:
+            problem, expected, example_id = _get_example_fields(task, ex, i)
             try:
-                result = runner(problem)
-                obtained_val = task.validator(result, self.pipeline_mode)
-                ok = task.success_measure(ex, obtained_val)
-                if ok:
-                    correct += 1
-                obtained_str = str(obtained_val)
-                outcome = ExampleOutcome(
+                result = await run_pipeline_mode_async(
+                    problem=problem,
+                    mode=self.pipeline_mode,
+                    pipeline_cfg=self.pipeline_cfg,
+                    llm_exec=llm_exec,
+                    model_by_role=self.model_by_role,
+                    prompt_overrides=self.prompt_overrides,
+                )
+                outcome, ok = _make_outcome_from_result(
+                    task=task,
+                    pipeline_mode=self.pipeline_mode,
+                    ex=ex,
                     idx=i,
-                    example_id=str(getattr(ex, "id", i)),
+                    example_id=example_id,
                     problem=problem,
                     expected=expected,
-                    obtained=obtained_str,
                     result=result,
-                    correct=ok,
-                    error=None,
                 )
             except Exception as e:
-                outcome = ExampleOutcome(
+                outcome, ok = _make_outcome_from_exception(
                     idx=i,
-                    example_id=str(getattr(ex, "id", i)),
+                    example_id=example_id,
                     problem=problem,
                     expected=expected,
-                    obtained="",
-                    result=None,
-                    correct=False,
-                    error=str(e),
+                    exc=e,
                 )
+            return i, outcome, ok
 
-            if self.keep_all_outcomes:
-                outcomes.append(outcome)
-            elif self.keep_random_k and len(outcomes) < self.keep_random_k:
-                outcomes.append(outcome)
-            elif self.keep_random_k and self.keep_random_k > 0:
-                # Reservoir sampling.
-                j = rng.randint(0, total - 1)
-                if j < self.keep_random_k:
-                    outcomes[j] = outcome
+        tasks = [run_one(i, ex) for i, ex in enumerate(examples)]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        for i, outcome, ok in results:
+            ordered_outcomes[i] = outcome
+            ordered_correct[i] = ok
+
+        correct = sum(1 for ok in ordered_correct if ok)
+        outcomes_in_order: List[ExampleOutcome] = []
+        for i in range(total):
+            outcomes_in_order.append(ordered_outcomes[i] or _placeholder_outcome(i))
+
+        outcomes_collect = _collect_outcomes_in_order(
+            outcomes_in_order=outcomes_in_order,
+            rng=rng,
+            keep_all_outcomes=self.keep_all_outcomes,
+            keep_random_k=self.keep_random_k,
+        )
 
         accuracy = (correct / total) if total else 0.0
         return TaskReport(
@@ -368,7 +492,62 @@ class EvaluationSuite:
             total=total,
             correct=correct,
             accuracy=accuracy,
-            outcomes=tuple(outcomes),
+            outcomes=tuple(outcomes_collect),
+            extra_stats={"max_in_flight": max_in_flight},
+        )
+
+    def run_task(
+        self, task: EvalTask[Any, Any], *, runner: PipelineRunner
+    ) -> TaskReport:
+        import random
+
+        rng = random.Random(self.seed)
+        total = 0
+        correct = 0
+        outcomes_in_order: List[ExampleOutcome] = []
+
+        for i, ex in enumerate(task.load_examples()):
+            total += 1
+            problem, expected, example_id = _get_example_fields(task, ex, i)
+            try:
+                result = runner(problem)
+                outcome, ok = _make_outcome_from_result(
+                    task=task,
+                    pipeline_mode=self.pipeline_mode,
+                    idx=i,
+                    example_id=example_id,
+                    problem=problem,
+                    expected=expected,
+                    ex=ex,
+                    result=result,
+                )
+                if ok:
+                    correct += 1
+            except Exception as e:
+                outcome, _ = _make_outcome_from_exception(
+                    idx=i,
+                    example_id=example_id,
+                    problem=problem,
+                    expected=expected,
+                    exc=e,
+                )
+
+            outcomes_in_order.append(outcome)
+
+        accuracy = (correct / total) if total else 0.0
+        outcomes_collect = _collect_outcomes_in_order(
+            outcomes_in_order=outcomes_in_order,
+            rng=rng,
+            keep_all_outcomes=self.keep_all_outcomes,
+            keep_random_k=self.keep_random_k,
+        )
+        return TaskReport(
+            task_id=task.task_id,
+            pipeline_mode=self.pipeline_mode,
+            total=total,
+            correct=correct,
+            accuracy=accuracy,
+            outcomes=tuple(outcomes_collect),
             extra_stats={},
         )
 
