@@ -1,28 +1,55 @@
 """
-Thin OpenRouter client used by all LLM‑backed modules.
+Async OpenRouter client for concurrent LLM calls.
 
-The client exposes a small surface area tailored to this project:
-- `LLMClient.generate` for free‑form text responses.
-- `LLMClient.generate_json` for structured JSON responses.
+Mirrors LLMClient (generate, generate_json) using httpx.AsyncClient for
+non-blocking I/O. Use a single client instance per run for connection pooling.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-import requests
+import httpx
 
 from .base_client import BaseLLMClient, ChatMessage, Conversation
 from .config import OpenRouterConfig, load_openrouter_config
 
 
-class LLMClient(BaseLLMClient):
-    """Client wrapper for the OpenRouter Chat Completions API."""
 
-    def __init__(self, config: Optional[OpenRouterConfig] = None) -> None:
+DEFAULT_TIMEOUT = 60.0
+
+
+class AsyncLLMClient(BaseLLMClient):
+    """Async client for the OpenRouter Chat Completions API using httpx."""
+
+    def __init__(
+        self,
+        config: Optional[OpenRouterConfig] = None,
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
         super().__init__(config=config)
+        self._timeout = timeout
+        self._client: Optional[httpx.AsyncClient] = None
 
-    def _post(
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self._timeout)
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client. Call when done with the client."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> "AsyncLLMClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
+
+    async def _post(
         self,
         messages: List[ChatMessage],
         *,
@@ -38,16 +65,16 @@ class LLMClient(BaseLLMClient):
         )
         headers = self._build_headers()
 
-        resp = requests.post(
+        client = self._get_client()
+        resp = await client.post(
             self.config.base_url,
             headers=headers,
             json=payload,
-            timeout=60,
         )
         resp.raise_for_status()
         return resp.json()
 
-    def generate(
+    async def generate(
         self,
         system_prompt: str,
         user_content: str,
@@ -57,11 +84,11 @@ class LLMClient(BaseLLMClient):
         max_tokens: Optional[int] = None,
     ) -> str:
         """
-        Single‑turn helper: send a system and user message and return the text reply.
+        Single-turn async helper: send system and user message, return text reply.
         """
         messages = self._build_single_turn_messages(system_prompt, user_content)
 
-        data = self._post(
+        data = await self._post(
             messages,
             model=model,
             temperature=temperature,
@@ -69,7 +96,7 @@ class LLMClient(BaseLLMClient):
         )
         return self._extract_content(data)
 
-    def generate_json(
+    async def generate_json(
         self,
         system_prompt: str,
         user_content: str,
@@ -79,12 +106,10 @@ class LLMClient(BaseLLMClient):
         max_tokens: Optional[int] = None,
     ) -> Any:
         """
-        Ask the model to return a single JSON object and parse it.
-
-        This relies on prompt discipline; it does not use tool calling.
+        Ask the model to return a single JSON object and parse it (async).
         """
         full_system = self._build_json_system_prompt(system_prompt)
-        raw = self.generate(
+        raw = await self.generate(
             full_system,
             user_content,
             model=model,
@@ -92,8 +117,8 @@ class LLMClient(BaseLLMClient):
             max_tokens=max_tokens,
         )
         return self._parse_json_response(raw)
-
-    def continue_conversation(
+    
+    async def continue_conversation(
         self,
         conversation: Conversation,
         user_content: str,
@@ -102,13 +127,15 @@ class LLMClient(BaseLLMClient):
         max_tokens: Optional[int] = None,
     ) -> str:
         """
-        Append a user message to an existing conversation, send it, and record
-        the assistant reply back into the conversation history.
+        Append a user message, send, and record the assistant reply (async).
         """
         messages = conversation.build_messages(user_content)
-        data = self._post(messages, temperature=temperature, max_tokens=max_tokens)
+        data = await self._post(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         reply = self._extract_content(data)
         conversation.append_user(user_content)
         conversation.append_assistant(reply)
         return reply
-

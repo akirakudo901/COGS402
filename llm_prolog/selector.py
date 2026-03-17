@@ -9,9 +9,10 @@ answer goal.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .llm_client.llm_client import LLMClient
+from .llm_executor import LLMExecutor
 from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premises
 
 
@@ -52,10 +53,33 @@ def select_next_step(
     answer_spec: AnswerSpec,
     llm: LLMClient,
     previous_premise_sets: Optional[List[List[int]]] = None,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
 ) -> SelectorDecision:
     """
     Ask the LLM which premises to combine next and what goal to pursue.
     """
+    user_content = _build_user_content(problem, premises, answer_spec, previous_premise_sets)
+    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    data = llm.generate_json(
+        system_prompt,
+        user_content,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return _decision_from_data(data)
+
+
+def _build_user_content(
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    previous_premise_sets: Optional[List[List[int]]] = None,
+) -> str:
     premises_block = render_premises(premises, verbosity_level=2)
     previous_sets_block = ""
     if previous_premise_sets:
@@ -67,7 +91,7 @@ def select_next_step(
             "Previously combined premise ID sets (do NOT choose any of these exact combinations again):\n"
             f"{{{formatted_sets},}}\n\n"
         )
-    user_content = (
+    return (
         "Problem:\n"
         f"{problem.strip()}\n\n"
         "Current premises (by ID):\n"
@@ -78,8 +102,8 @@ def select_next_step(
         "Decide the next reasoning step following the instructions."
     )
 
-    data = llm.generate_json(SYSTEM_PROMPT, user_content)
 
+def _decision_from_data(data: Dict[str, Any]) -> SelectorDecision:
     selected_ids = data.get("selected_premise_ids") or []
     if not isinstance(selected_ids, list):
         selected_ids = []
@@ -100,8 +124,8 @@ def select_next_step(
     background_clean = [str(x) for x in background if isinstance(x, (str, int, float))]
 
     is_answer_goal = bool(data.get("is_answer_goal", False))
-    
-    # 'should_stop' and 'stop_reason' are filled by the pipeline once we checked the new premise 
+
+    # 'should_stop' and 'stop_reason' are filled by the pipeline once we checked the new premise
     # is a fact uniting with the goal predicate
     return SelectorDecision(
         selected_premise_ids=selected_ids_clean,
@@ -111,4 +135,31 @@ def select_next_step(
         should_stop=False,
         stop_reason=None,
     )
+
+
+async def select_next_step_async(
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    llm_exec: LLMExecutor,
+    previous_premise_sets: Optional[List[List[int]]] = None,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
+) -> SelectorDecision:
+    """
+    Async version: ask the LLM which premises to combine next via LLMExecutor.
+    """
+    user_content = _build_user_content(problem, premises, answer_spec, previous_premise_sets)
+    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    data = await llm_exec.generate_json(
+        system_prompt,
+        user_content,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return _decision_from_data(data)
 
