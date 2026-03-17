@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .llm_client.llm_client import LLMClient
+from .llm_executor import LLMExecutor
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,10 @@ def run_cot_baseline(
         temperature=getattr(model_spec, "temperature", None) if model_spec else None,
         max_tokens=getattr(model_spec, "max_tokens", None) if model_spec else None,
     )
+    return _cot_result_from_raw(raw, model_spec)
 
+
+def _cot_result_from_raw(raw: str, model_spec: Any | None) -> CoTResult:
     answer_text = raw.strip()
     for line in raw.splitlines()[::-1]:
         if line.strip().upper().startswith("FINAL:"):
@@ -57,4 +61,29 @@ def run_cot_baseline(
         reasoning=raw,
         model=getattr(model_spec, "model", None) if model_spec else None,
     )
+
+
+async def run_cot_baseline_async(
+    problem: str,
+    *,
+    llm_exec: LLMExecutor,
+    model_spec: Any | None = None,
+    system_prompt_override: str | None = None,
+) -> CoTResult:
+    """
+    Async Chain-of-Thought baseline via LLMExecutor.
+    """
+    system_prompt = system_prompt_override or (
+        "You are a careful problem solver. Solve the user's problem.\n"
+        "Return your final answer on a line starting with 'FINAL:' followed by the answer."
+    )
+    user_content = problem.strip()
+    raw = await llm_exec.generate(
+        system_prompt,
+        user_content,
+        model=getattr(model_spec, "model", None) if model_spec else None,
+        temperature=getattr(model_spec, "temperature", None) if model_spec else None,
+        max_tokens=getattr(model_spec, "max_tokens", None) if model_spec else None,
+    )
+    return _cot_result_from_raw(raw, model_spec)
 
