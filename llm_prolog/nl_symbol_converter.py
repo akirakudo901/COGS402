@@ -8,9 +8,10 @@ This module is responsible for taking a natural‑language problem and producing
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .llm_client.llm_client import LLMClient
+from .llm_executor import LLMExecutor
 from .symbolic.types import (
     AnswerSpec,
     Premise,
@@ -80,7 +81,10 @@ def convert_problem_to_symbols(
         temperature=temperature,
         max_tokens=max_tokens,
     )
+    return _symbols_from_data(data)
 
+
+def _symbols_from_data(data: Dict[str, Any]) -> Tuple[List[Premise], AnswerSpec]:
     raw_facts = data.get("facts", []) or []
     raw_rules = data.get("rules", []) or []
     answer_head_str = data.get("answer_head")
@@ -112,4 +116,28 @@ def convert_problem_to_symbols(
     # logical variable (the final answer) and any number of constants.
     answer_spec = AnswerSpec(target=target_pred)
     return premises, answer_spec
+
+
+async def convert_problem_to_symbols_async(
+    problem: str,
+    llm_exec: LLMExecutor,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
+) -> Tuple[List[Premise], AnswerSpec]:
+    """
+    Async version: convert NL problem to symbolic premises and answer spec via LLMExecutor.
+    """
+    user_prompt = _build_user_prompt(problem)
+    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    data = await llm_exec.generate_json(
+        system_prompt,
+        user_prompt,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return _symbols_from_data(data)
 
