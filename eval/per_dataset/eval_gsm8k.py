@@ -242,11 +242,15 @@ def _parse_groundtruth_from_answer(
 def load_gsm8k_examples(
     size: int | str,
     seed: int = 42,
-    from_train_split: bool = True
+    from_train_split: bool = True,
+    ids: Optional[Iterable[int]] = None,
 ) -> list[GSM8KExample]:
     """
     Load specified number of examples from the specified split at random using the given seed.
     'size' can be 'all', in which case all examples are returned.
+
+    If `ids` is provided, it is interpreted as a sequence of dataset row indices (problem ids) in
+    the pre-shuffle order; we extract those rows exactly and do not perform any random selection.
     """
     import random
 
@@ -255,7 +259,18 @@ def load_gsm8k_examples(
 
     df = pd.read_parquet(path)
 
-    if size == "all":
+    if ids is not None:
+        # Extract exact dataset rows by pre-shuffle index.
+        if not hasattr(ids, "__iter__") or isinstance(ids, str) or not all(isinstance(i, int) for i in ids):
+            raise TypeError("`ids` must be a non-string iterable of integers (dataset row indices).")
+        ids = list(ids)  # Make sure to allow indexing and len, regardless of input type.
+        if len(ids) == 0:
+            return []
+        n = len(df)
+        if any(i < 0 or i >= n for i in ids):
+            raise ValueError(f"`ids` contains out-of-range indices for split '{split}' with {n} rows.")
+        indices = ids
+    elif size == "all":
         indices = range(len(df))
     elif isinstance(size, str) and size.isdigit() or isinstance(size, int):
         size_int = int(size)
