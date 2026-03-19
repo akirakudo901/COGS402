@@ -2,6 +2,8 @@
 The script where the actual evaluation occurs.
 """
 
+from typing import Optional, Sequence
+
 from llm_prolog.pipeline import PipelineConfig
 
 from eval.eval_suite import (
@@ -22,15 +24,34 @@ from eval.per_dataset.eval_gsm8k import (
 def spec_to_name(spec : ModelSpec) -> str:
     return spec.model.split("/")[-1]
 
-def get_gsm8K_eval_task(size : int, seed : int = 42, from_train_split : bool = True) -> SimpleEvalTask:
-    return SimpleEvalTask(
-        task_id=f"gsm8k:{size}exs", 
-        examples=load_gsm8k_examples(size=size, seed=seed, from_train_split=from_train_split), 
-        validator_fn=gsm8k_main_validator, 
-        success_measure_fn=gsm8k_success_measure,
-        problem_fn=default_problem_str,
-        expected_fn=default_expected_repr
-    )
+def get_gsm8K_eval_task(
+    size : Optional[int] = None, 
+    seed : int = 42, 
+    from_train_split : bool = True, 
+    ids : Optional[Sequence[int]] = None
+) -> SimpleEvalTask:
+    if not size and not ids:
+        raise Exception("Either 'size' or 'ids' must be given to 'get_gsm8K_eval_task'.")
+    elif size:
+        if size and ids:
+            print("size and ids given to 'get_gsm8K_eval_task', size takes priority.")
+        return SimpleEvalTask(
+            task_id=f"gsm8k:{size}exs", 
+            examples=load_gsm8k_examples(size=size, seed=seed, from_train_split=from_train_split), 
+            validator_fn=gsm8k_main_validator, 
+            success_measure_fn=gsm8k_success_measure,
+            problem_fn=default_problem_str,
+            expected_fn=default_expected_repr
+        )
+    elif ids:
+        return SimpleEvalTask(
+            task_id=f"gsm8k:ids={ids}", 
+            examples=load_gsm8k_examples(size=0, from_train_split=from_train_split, ids=ids), 
+            validator_fn=gsm8k_main_validator, 
+            success_measure_fn=gsm8k_success_measure,
+            problem_fn=default_problem_str,
+            expected_fn=default_expected_repr
+        )
 
 
 # eval suite 1: trial
@@ -89,10 +110,43 @@ multi_suite2 = [
     for specific_spec in specs
 ]
 
+# eval suite 3: GPT4.1mini on different failure modes to see if they're fixed
+spec = ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None)
+
+mode = PipelineMode.SYMBOLIC_HYBRID
+pipeline_cfg = PipelineConfig(max_steps=10, explain=True)
+
+fail_derive_ids = [3, 9, 10, 14, 17, 23, 28, 33, 39, 40, 48, 49]
+combined_already_ids = [3, 9, 10, 14, 17, 23, 24, 28, 33, 35, 39, 40, 44, 48, 49]
+only_one_premise_ids = [5, 13, 23, 24, 32, 35, 39, 44]
+
+fail_derive_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Failing to derive new premise'"
+combined_already_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Combining previously combined premises'"
+only_one_premise_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Selecting only one premise'"
+
+def return_suite(name, ids):
+    return EvaluationSuite(
+        name=name,
+        tasks=[get_gsm8K_eval_task(ids=ids),],
+        pipeline_mode=mode,
+        model_by_role=ModelMapping.set_spec_to_all_roles(spec, mode),
+        prompt_overrides=None,
+        pipeline_cfg=pipeline_cfg,
+        keep_all_outcomes=True,
+        keep_random_k=0,
+        seed=0
+    )
+
+multi_suite3 = [
+    return_suite(fail_derive_name, fail_derive_ids),
+    return_suite(combined_already_name, combined_already_ids),
+    return_suite(only_one_premise_name, only_one_premise_ids)
+]
+
 #################
 # RUN OF CHOICE #
 #################
-suites_of_choice = multi_suite2
+suites_of_choice = multi_suite3
 
 for s in suites_of_choice:
     print("~"*50)
