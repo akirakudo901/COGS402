@@ -43,7 +43,8 @@ Output MUST be a single JSON object with the fields:
 - "is_answer_goal": boolean.
 - "background_premises": list of strings, each a fact or rule ending
   with a period.
-- "selected_premise_ids": list of integer IDs indicating premise sets selected previously.
+- "selected_rule_id": an integer ID indicating the rule premise selected in this step.
+- "selected_fact_ids": list of integer IDs indicating fact premises selected in this step.
 """
 
 
@@ -104,11 +105,16 @@ def _build_user_content(
 
 
 def _decision_from_data(data: Dict[str, Any]) -> SelectorDecision:
-    selected_ids = data.get("selected_premise_ids") or []
-    if not isinstance(selected_ids, list):
-        selected_ids = []
+    selected_rule_id = data.get("selected_rule_id") or None
+    selected_fact_ids = data.get("selected_fact_ids") or []
+    
+    try:
+        selected_fact_ids = [selected_rule_id] + list(selected_fact_ids)
+    except Exception:
+        selected_fact_ids = []
+    
     selected_ids_clean: List[int] = []
-    for v in selected_ids:
+    for v in selected_fact_ids:
         try:
             selected_ids_clean.append(int(v))
         except (TypeError, ValueError):
