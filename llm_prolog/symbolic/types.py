@@ -114,16 +114,17 @@ class Premise:
         Level 1: clause + natural language description
         Level 2: clause + nl desc + parent ids
         Level 3: clause + nl desc + p ids + source
+        Level 4: clause + parent ids
         """
-        if level not in range(4):
-            raise Exception("str_verbose accepts verbosity levels from 0 to 3 only.")
+        if level not in range(5):
+            raise Exception("str_verbose accepts verbosity levels from 0 to 4 only.")
         clause_str = format_clause(self.clause)
         lines = [f"{self.id}: {clause_str}"]
-        if self.nl and level >= 1:
+        if self.nl and level >= 1 and level != 4:
             lines[0] += f" # {self.nl}"
         if self.parent_ids is not None and len(self.parent_ids) > 0 and level >= 2:
             lines.append(f"  (from premises {', '.join(str(pid) for pid in self.parent_ids)})")
-        if self.source and level >= 3:
+        if self.source and level >= 3 and level != 4:
             lines.append(f"  Source: {self.source}")
         return "\n".join(lines)
 
