@@ -24,6 +24,7 @@ from eval.eval_suite import PipelineMode, SimpleEvalTask
 class GSM8KExample:
     problem: str
     ground_truth: float
+    id: int # integer id; e.g. when read out of parquet, designates position in dataframe
 
 
 EXAMPLE_1 = GSM8KExample(
@@ -32,6 +33,7 @@ EXAMPLE_1 = GSM8KExample(
         "How many apples does Alice have now?"
     ),
     ground_truth=8.0,
+    id=1
 )
 
 EXAMPLE_2 = GSM8KExample(
@@ -40,6 +42,7 @@ EXAMPLE_2 = GSM8KExample(
         "If Martha has 40 berries, how many berries does Kendra have?"
     ),
     ground_truth=43.0,
+    id=2
 )
 
 EXAMPLE_3 = GSM8KExample(
@@ -48,6 +51,7 @@ EXAMPLE_3 = GSM8KExample(
         "If she used a total of 120 teaspoons of sugar and cups of water, calculate the number of teaspoonfuls of sugar she used."
     ),
     ground_truth=42.0,
+    id=3
 )
 
 EXAMPLE_4 = GSM8KExample(
@@ -56,6 +60,7 @@ EXAMPLE_4 = GSM8KExample(
         "How many clips did Natalia sell altogether in April and May?"
     ),
     ground_truth=72.0,
+    id=4
 )
 
 EXAMPLE_5 = GSM8KExample(
@@ -65,6 +70,7 @@ EXAMPLE_5 = GSM8KExample(
         "If he can bike at 25 mph how much time does he spend biking a week?"
     ),
     ground_truth=16.0,
+    id=5
 )
 
 EXAMPLE_6 = GSM8KExample(
@@ -76,6 +82,7 @@ EXAMPLE_6 = GSM8KExample(
         "the unrelated files he downloaded in the second round?"
     ),
     ground_truth=400.0,
+    id=6
 )
 
 
@@ -266,6 +273,7 @@ def load_gsm8k_examples(
         ex = GSM8KExample(
             problem=row["question"],
             ground_truth=float_gt,
+            id=i
         )
         examples.append(ex)
     return examples
