@@ -377,7 +377,7 @@ class EvaluationSuite:
         out += " on (" + ', '.join([t.task_id for t in self.tasks]) + ")"
         return out
 
-    def _make_llm(self) -> LLMClient:
+    def _make_llm_client(self) -> LLMClient:
         # The per-role ModelSpec is passed per request via LLMClient overrides.
         return LLMClient()
 
@@ -396,20 +396,64 @@ class EvaluationSuite:
 
         return _run
 
-    def run(self) -> SuiteReport:
-        llm = self._make_llm()
-        runner = self._runner(llm=llm)
+    def _print_openrouter_balance_before(self, llm_or_client):
+        """
+        Helper to optionally fetch and print Openrouter balance before execution.
+        Returns the balance before, or None.
+        """
+        try:
+            balance_before = llm_or_client.get_credits_usage_balance()["balance"]
+            print(f"[Openrouter] Balance before execution: {balance_before}")
+            return balance_before
+        except Exception as e:
+            print(f"[Openrouter] Failed to fetch balance before execution: {e}")
+            return None
+
+    def _print_openrouter_balance_after(self, llm_or_client, balance_before):
+        """
+        Helper to optionally fetch and print Openrouter balance after execution,
+        and used credit since 'balance_before'.
+        """
+        try:
+            balance_after = llm_or_client.get_credits_usage_balance()["balance"]
+            print(f"[Openrouter] Balance after execution: {balance_after}")
+            if balance_before is not None and balance_after is not None:
+                used = float(balance_before) - float(balance_after)
+                print(f"[Openrouter] Credit used for this suite: {used:.6f}")
+        except Exception as e:
+            print(f"[Openrouter] Failed to fetch balance after execution: {e}")
+
+    def run(self, show_openrouter_balance: bool = True) -> SuiteReport:
+        """
+        Run all tasks sequentially. If show_openrouter_balance is True, print
+        the Openrouter balance before and after, and the credit used.
+        """
+        client = self._make_llm_client()
+        if show_openrouter_balance:
+            balance_before = self._print_openrouter_balance_before(client)
+        runner = self._runner(llm=client)
         reports: List[TaskReport] = []
         for task in self.tasks:
             reports.append(self.run_task(task, runner=runner))
+        if show_openrouter_balance:
+            self._print_openrouter_balance_after(client, balance_before)
         return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
 
-    async def run_async(self, max_in_flight: int = 8, print_progress : bool = False) -> SuiteReport:
+    async def run_async(
+        self,
+        max_in_flight: int = 8,
+        print_progress: bool = False,
+        show_openrouter_balance: bool = True
+    ) -> SuiteReport:
         """
         Run all tasks with concurrent pipelines; LLM calls are bounded by max_in_flight.
         Uses one shared AsyncLLMClient and LLMExecutor per suite run.
+        If show_openrouter_balance is True, print balance before and after, and used credit.
         """
         async with AsyncLLMClient() as client:
+            if show_openrouter_balance:
+                balance_before = self._print_openrouter_balance_before(client)
+
             executor = LLMExecutor(client, max_in_flight=max_in_flight)
             reports: List[TaskReport] = []
             for task in self.tasks:
@@ -417,6 +461,9 @@ class EvaluationSuite:
                     task, llm_exec=executor, max_in_flight=max_in_flight, print_progress=print_progress
                 )
                 reports.append(report)
+            
+            if show_openrouter_balance:
+                self._print_openrouter_balance_after(client, balance_before)
         return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
 
     async def run_task_async(
