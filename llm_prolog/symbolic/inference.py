@@ -9,10 +9,17 @@ This module implements a very small Horn‑clause engine:
 from __future__ import annotations
 
 import ast
+import os
 import re
+import threading
 from typing import Dict, List, Optional, Tuple
 
-from .types import Clause, Fact, Predicate, Premise, Rule, Term
+from .types import Clause, Fact, Predicate, Premise, Rule, Term, _parse_term
+
+try:
+    from pyswip import Prolog  # type: ignore[reportMissingImports]
+except Exception:  # pragma: no cover - import error path is tested via policy handling
+    Prolog = None  # type: ignore[assignment]
 
 
 Substitution = Dict[str, Term]
@@ -20,7 +27,89 @@ Substitution = Dict[str, Term]
 _PROLOG_VAR_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 
 
-def unify_terms(a: Term, b: Term, subst: Substitution) -> Optional[Substitution]:
+def _inference_policy() -> str:
+    """
+    Backend policy:
+    - strict (default): require pySwip + SWI-Prolog and raise if unavailable.
+    - fallback: silently fallback to Python implementation when unavailable.
+    """
+    raw = os.getenv("LLM_PROLOG_INFERENCE_POLICY", "strict").strip().lower()
+    return "fallback" if raw == "fallback" else "strict"
+
+
+class _PrologBackend:
+    def __init__(self) -> None:
+        if Prolog is None:
+            raise RuntimeError(
+                "pySwip is not available. Install `pyswip` and SWI-Prolog, "
+                "or set LLM_PROLOG_INFERENCE_POLICY=fallback."
+            )
+        self._lock = threading.Lock()
+        self._prolog = Prolog()
+
+    def unify_predicates(
+        self, a: Predicate, b: Predicate, subst: Optional[Substitution] = None
+    ) -> Optional[Substitution]:
+        def _value_to_term(value: object) -> Optional[Term]:
+            if value is None:
+                return None
+            text = str(value)
+            if not text:
+                return None
+            return _parse_term(text)
+        
+        if a.name != b.name or len(a.args) != len(b.args):
+            return None
+
+        initial = {} if subst is None else dict(subst)
+        pred_a = a.to_prolog_text()
+        pred_b = b.to_prolog_text()
+        goals = []
+        for var_name, bound_term in initial.items():
+            goals.append(f"{var_name} = {bound_term.to_prolog_text()}")
+        goals.append(f"{pred_a} = {pred_b}")
+        query = ", ".join(goals)
+
+        try:
+            with self._lock:
+                solutions = list(self._prolog.query(query, maxresult=1))
+        except Exception:
+            return None
+        if not solutions:
+            return None
+
+        resolved = dict(initial)
+        solution = solutions[0]
+        for var_name, value in solution.items():
+            term = _value_to_term(value)
+            if term is not None:
+                resolved[str(var_name)] = term
+        return resolved
+
+
+_PROLOG_BACKEND: Optional[_PrologBackend] = None
+_PROLOG_BACKEND_ERROR: Optional[Exception] = None
+
+
+def _get_prolog_backend() -> _PrologBackend:
+    global _PROLOG_BACKEND, _PROLOG_BACKEND_ERROR
+    if _PROLOG_BACKEND is not None:
+        return _PROLOG_BACKEND
+    if _PROLOG_BACKEND_ERROR is not None:
+        raise _PROLOG_BACKEND_ERROR
+    try:
+        _PROLOG_BACKEND = _PrologBackend()
+        return _PROLOG_BACKEND
+    except Exception as exc:
+        _PROLOG_BACKEND_ERROR = exc
+        raise
+
+
+def _prefer_python_fallback_on_backend_error() -> bool:
+    return _inference_policy() == "fallback"
+
+
+def _py_unify_terms(a: Term, b: Term, subst: Substitution) -> Optional[Substitution]:
     """
     Unify two terms under an existing substitution, returning an extended
     substitution or None if unification fails.
@@ -52,7 +141,7 @@ def unify_terms(a: Term, b: Term, subst: Substitution) -> Optional[Substitution]
     return None
 
 
-def unify_predicates(a: Predicate, b: Predicate, subst: Optional[Substitution] = None) -> Optional[Substitution]:
+def _py_unify_predicates(a: Predicate, b: Predicate, subst: Optional[Substitution] = None) -> Optional[Substitution]:
     """
     Unify two predicates with the same name and arity.
     """
@@ -60,10 +149,29 @@ def unify_predicates(a: Predicate, b: Predicate, subst: Optional[Substitution] =
         return None
     subst = {} if subst is None else dict(subst)
     for ta, tb in zip(a.args, b.args):
-        subst = unify_terms(ta, tb, subst)
+        subst = _py_unify_terms(ta, tb, subst)
         if subst is None:
             return None
     return subst
+
+
+def unify_predicates(a: Predicate, b: Predicate, subst: Optional[Substitution] = None) -> Optional[Substitution]:
+    """
+    Unify two predicates using SWI-Prolog (pySwip) by default.
+    Falls back to legacy Python unifier only when policy is `fallback`.
+    """
+    try:
+        backend = _get_prolog_backend()
+        return backend.unify_predicates(a, b, subst)
+    except Exception as exc:
+        if _prefer_python_fallback_on_backend_error():
+            return _py_unify_predicates(a, b, subst)
+        raise RuntimeError(
+            "SWI-Prolog inference backend unavailable while "
+            "LLM_PROLOG_INFERENCE_POLICY=strict. "
+            "Install SWI-Prolog and pyswip, or set "
+            "LLM_PROLOG_INFERENCE_POLICY=fallback."
+        ) from exc
 
 
 def apply_subst_predicate(pred: Predicate, subst: Substitution) -> Predicate:
@@ -218,7 +326,7 @@ def _reduce_mathis_in_rule(rule: Rule) -> Clause:
             else:
                 value_term = Term.constant(str(value))
 
-            extended = unify_terms(lhs, value_term, subst)
+            extended = _py_unify_terms(lhs, value_term, subst)
             if extended is None:
                 # Prolog would fail this branch; we represent this as "no reduction".
                 new_body.append(atom)
