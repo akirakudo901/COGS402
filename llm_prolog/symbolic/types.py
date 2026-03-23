@@ -14,7 +14,13 @@ syntax sufficient for the project (no nested function symbols, no lists).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Dict, List, Optional, Tuple, Union
+
+_NUMERIC_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
+
+def _escape_atom(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("'", "\\'")
 
 
 @dataclass(frozen=True)
@@ -38,7 +44,13 @@ class Term:
     def __str__(self) -> str:
         # Prolog-style: variables are uppercase, constants are lowercase.
         return self.name.capitalize() if self.is_variable else self.name.lower()
-
+    
+    def to_prolog_text(self) -> str:
+        if self.is_variable:
+            return self.name
+        if _NUMERIC_RE.fullmatch(self.name.strip()):
+            return self.name.strip()
+        return f"'{_escape_atom(self.name)}'"
 
 @dataclass(frozen=True)
 class Predicate:
@@ -53,6 +65,12 @@ class Predicate:
             return self.name
         arg_str = ", ".join(str(t) for t in self.args)
         return f"{self.name}({arg_str})"
+    
+    def to_prolog_text(self) -> str:
+        if not self.args:
+            return self.name
+        args = ", ".join(t.to_prolog_text() for t in self.args)
+        return f"{self.name}({args})"
 
 
 @dataclass(frozen=True)
@@ -64,6 +82,9 @@ class Fact:
 
     def __str__(self) -> str:
         return f"{self.predicate}."
+    
+    def to_prolog_text(self) -> str:
+        return self.predicate.to_prolog_text()
 
 
 @dataclass(frozen=True)
@@ -79,6 +100,10 @@ class Rule:
             return f"{self.head}."
         body_str = ", ".join(str(p) for p in self.body)
         return f"{self.head} :- {body_str}."
+    
+    def to_prolog_text(self) -> str:
+        body = ", ".join(p.to_prolog_text() for p in self.body)
+        return f"{self.head.to_prolog_text()} :- {body}"
 
 
 Clause = Union[Fact, Rule]
