@@ -10,6 +10,7 @@ This module wires together:
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple
 
@@ -36,6 +37,60 @@ from .symbol_nl_converter import symbols_to_nl, symbols_to_nl_async
 class PipelineConfig:
     max_steps: int = 10
     explain: bool = True
+
+
+@dataclass
+class FailedStep:
+    """
+    Structured record for one failed inference attempt.
+    """
+
+    proposed_premise: Optional[str]
+    combined_premise_ids: List[int]
+    note: str
+
+    @classmethod
+    def from_attempt(
+        cls,
+        proposed_premise: Optional[str],
+        combined_premise_ids: List[int],
+        note: str,
+    ) -> "FailedStep":
+        normalized_ids: List[int] = []
+        for pid in combined_premise_ids:
+            try:
+                normalized_ids.append(int(pid))
+            except (TypeError, ValueError):
+                continue
+        return cls(
+            proposed_premise=(proposed_premise.strip() if isinstance(proposed_premise, str) else None),
+            combined_premise_ids=sorted(normalized_ids),
+            note=note,
+        )
+
+    @staticmethod
+    def format_grouped_for_selector(failed_steps: List["FailedStep"]) -> str:
+        """
+        Group failed steps by note for compact selector context.
+        """
+        if not failed_steps:
+            return ""
+
+        grouped: dict[str, List[FailedStep]] = defaultdict(list)
+        for failed in failed_steps:
+            grouped[failed.note].append(failed)
+
+        lines: List[str] = [
+            "Past failed steps (grouped by reason):",
+        ]
+        for note in sorted(grouped):
+            lines.append(f"- note='{note}'")
+            for failed in grouped[note]:
+                proposed = failed.proposed_premise if failed.proposed_premise is not None else "None"
+                lines.append(
+                    f"  (proposed='{proposed}', combined={failed.combined_premise_ids})"
+                )
+        return "\n".join(lines) + "\n\n"
 
 
 def _role_key(role: Any) -> str:
@@ -129,7 +184,7 @@ def _process_symbolic_decision_step(
     answer_spec: AnswerSpec,
     decision: SelectorDecision,
     used_premise_sets: Set[FrozenSet[int]],
-) -> Tuple[List[Premise], Optional[Premise], PipelineStep, bool, Optional[str]]:
+) -> Tuple[List[Premise], Optional[Premise], PipelineStep, bool, Optional[str], Optional[FailedStep]]:
     """
     Apply one selector decision to the symbolic state.
 
@@ -144,6 +199,7 @@ def _process_symbolic_decision_step(
         premises = _append_background_premises(premises, decision.background_premises)
 
     if len(decision.selected_premise_ids) < 2:
+        note = "Selector did not choose two premises; skipping inference."
         return (
             premises,
             None,
@@ -153,15 +209,21 @@ def _process_symbolic_decision_step(
                 new_premise=None,
                 decision=decision,
                 success=False,
-                note="Selector did not choose two premises; skipping inference.",
+                note=note,
             ),
             False,
             None,
+            FailedStep.from_attempt(
+                proposed_premise=decision.proposed_new_premise,
+                combined_premise_ids=decision.selected_premise_ids,
+                note=note,
+            ),
         )
 
     # Detect reuse of an already‑combined set of premises (order‑insensitive).
     selected_set = frozenset(decision.selected_premise_ids)
     if selected_set in used_premise_sets:
+        note = "Inference step failed due to selecting premises already combined previously."
         return (
             premises,
             None,
@@ -171,10 +233,15 @@ def _process_symbolic_decision_step(
                 new_premise=None,
                 decision=decision,
                 success=False,
-                note="Inference step failed due to selecting premises already combined previously.",
+                note=note,
             ),
             False,
             None,
+            FailedStep.from_attempt(
+                proposed_premise=decision.proposed_new_premise,
+                combined_premise_ids=decision.selected_premise_ids,
+                note=note,
+            ),
         )
 
     selected_premises: List[Premise] = []
@@ -187,6 +254,7 @@ def _process_symbolic_decision_step(
             selected_premises.append(premise)
 
     if missing_ids:
+        note = f"Selector referenced unknown premise IDs: {missing_ids}"
         return (
             premises,
             None,
@@ -196,16 +264,22 @@ def _process_symbolic_decision_step(
                 new_premise=None,
                 decision=decision,
                 success=False,
-                note=f"Selector referenced unknown premise IDs: {missing_ids}",
+                note=note,
             ),
             False,
             None,
+            FailedStep.from_attempt(
+                proposed_premise=decision.proposed_new_premise,
+                combined_premise_ids=decision.selected_premise_ids,
+                note=note,
+            ),
         )
 
     used_premise_sets.add(selected_set)
 
     new_clause = infer_new_premise(selected_premises)
     if new_clause is None:
+        note = "Inference failed to derive a new clause from selected premises."
         return (
             premises,
             None,
@@ -215,10 +289,15 @@ def _process_symbolic_decision_step(
                 new_premise=None,
                 decision=decision,
                 success=False,
-                note="Inference failed to derive a new clause from selected premises.",
+                note=note,
             ),
             False,
             None,
+            FailedStep.from_attempt(
+                proposed_premise=decision.proposed_new_premise,
+                combined_premise_ids=decision.selected_premise_ids,
+                note=note,
+            ),
         )
 
     new_id = max((p.id for p in premises), default=0) + 1
@@ -241,9 +320,9 @@ def _process_symbolic_decision_step(
     )
 
     if _answer_matches(new_premise, answer_spec):
-        return premises, new_premise, step, True, "answer_head_matched"
+        return premises, new_premise, step, True, "answer_head_matched", None
 
-    return premises, None, step, False, None
+    return premises, None, step, False, None, None
 
 
 def _run_symbolic_steps(
@@ -258,12 +337,13 @@ def _run_symbolic_steps(
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
     step_iter: Optional[Iterable[int]] = None,
-) -> tuple[bool, Optional[Premise], List[PipelineStep], Optional[str], Set[FrozenSet[int]]]:
+) -> tuple[bool, Optional[Premise], List[PipelineStep], Optional[str]]:
     steps: List[PipelineStep] = []
     success = False
     final_answer: Optional[Premise] = None
     reason: Optional[str] = None
     used_premise_sets: Set[FrozenSet[int]] = set()
+    failed_steps: List[FailedStep] = []
 
     iterator = step_iter if step_iter is not None else tqdm(range(pipeline_cfg.max_steps))
     for step_idx in iterator:
@@ -272,14 +352,14 @@ def _run_symbolic_steps(
             premises=premises,
             answer_spec=answer_spec,
             llm=llm,
-            previous_premise_sets=[sorted(list(s)) for s in used_premise_sets],
+            failed_steps_context=FailedStep.format_grouped_for_selector(failed_steps),
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
         )
 
-        premises, found_answer, step, should_stop, stop_reason = _process_symbolic_decision_step(
+        premises, found_answer, step, should_stop, stop_reason, failed_step = _process_symbolic_decision_step(
             step_idx=step_idx,
             premises=premises,
             answer_spec=answer_spec,
@@ -287,13 +367,15 @@ def _run_symbolic_steps(
             used_premise_sets=used_premise_sets,
         )
         steps.append(step)
+        if failed_step is not None:
+            failed_steps.append(failed_step)
         if should_stop:
             success = True
             final_answer = found_answer
             reason = stop_reason
             break
 
-    return success, final_answer, steps, reason, used_premise_sets
+    return success, final_answer, steps, reason
 
 
 async def _run_symbolic_steps_async(
@@ -308,12 +390,13 @@ async def _run_symbolic_steps_async(
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
     step_iter: Optional[Iterable[int]] = None,
-) -> tuple[bool, Optional[Premise], List[PipelineStep], Optional[str], Set[FrozenSet[int]]]:
+) -> tuple[bool, Optional[Premise], List[PipelineStep], Optional[str]]:
     steps: List[PipelineStep] = []
     success = False
     final_answer: Optional[Premise] = None
     reason: Optional[str] = None
     used_premise_sets: Set[FrozenSet[int]] = set()
+    failed_steps: List[FailedStep] = []
 
     iterator = step_iter if step_iter is not None else range(pipeline_cfg.max_steps)
     for step_idx in iterator:
@@ -322,14 +405,14 @@ async def _run_symbolic_steps_async(
             premises=premises,
             answer_spec=answer_spec,
             llm_exec=llm_exec,
-            previous_premise_sets=[sorted(list(s)) for s in used_premise_sets],
+            failed_steps_context=FailedStep.format_grouped_for_selector(failed_steps),
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
         )
 
-        premises, found_answer, step, should_stop, stop_reason = _process_symbolic_decision_step(
+        premises, found_answer, step, should_stop, stop_reason, failed_step = _process_symbolic_decision_step(
             step_idx=step_idx,
             premises=premises,
             answer_spec=answer_spec,
@@ -337,13 +420,15 @@ async def _run_symbolic_steps_async(
             used_premise_sets=used_premise_sets,
         )
         steps.append(step)
+        if failed_step is not None:
+            failed_steps.append(failed_step)
         if should_stop:
             success = True
             final_answer = found_answer
             reason = stop_reason
             break
 
-    return success, final_answer, steps, reason, used_premise_sets
+    return success, final_answer, steps, reason
 
 
 def run_symbolic_hybrid_pipeline(
@@ -376,7 +461,7 @@ def run_symbolic_hybrid_pipeline(
     )
 
     sel_spec = _get_model_spec(model_by_role, "selector")
-    success, final_answer, steps, reason, used_premise_sets = _run_symbolic_steps(
+    success, final_answer, steps, reason = _run_symbolic_steps(
         problem=problem,
         pipeline_cfg=pipeline_cfg,
         premises=premises,
@@ -439,7 +524,7 @@ async def run_symbolic_hybrid_pipeline_async(
     )
 
     sel_spec = _get_model_spec(model_by_role, "selector")
-    success, final_answer, steps, reason, used_premise_sets = await _run_symbolic_steps_async(
+    success, final_answer, steps, reason = await _run_symbolic_steps_async(
         problem=problem,
         pipeline_cfg=pipeline_cfg,
         premises=premises,

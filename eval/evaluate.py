@@ -4,6 +4,8 @@ The script where the actual evaluation occurs.
 
 from typing import Optional, Sequence
 
+import asyncio
+
 from llm_prolog.pipeline import PipelineConfig
 
 from eval.eval_suite import (
@@ -120,6 +122,10 @@ fail_derive_ids = [3, 9, 10, 14, 17, 23, 28, 33, 39, 40, 48, 49]
 combined_already_ids = [3, 9, 10, 14, 17, 23, 24, 28, 33, 35, 39, 40, 44, 48, 49]
 only_one_premise_ids = [5, 13, 23, 24, 32, 35, 39, 44]
 
+combined_already_ids = [id for id in combined_already_ids if id not in fail_derive_ids]
+only_one_premise_ids = [id for id in only_one_premise_ids  
+                        if (id not in fail_derive_ids) and (id not in combined_already_ids)]
+
 fail_derive_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Failing to derive new premise'"
 combined_already_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Combining previously combined premises'"
 only_one_premise_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Selecting only one premise'"
@@ -151,5 +157,5 @@ suites_of_choice = multi_suite3
 for s in suites_of_choice:
     print("~"*50)
     print(s.get_description())
-    report = s.run()
+    report = asyncio.run(s.run_async(max_in_flight=15, print_progress=True, show_openrouter_balance=True))
     print(report)

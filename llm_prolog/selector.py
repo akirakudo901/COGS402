@@ -23,7 +23,7 @@ You are given:
 - A natural language problem with a question or goal.
 - A list of existing premises (facts and rules) with IDs.
 - A target answer head predicate we ultimately want to prove.
-‑ A (possibly empty) list of premise‑ID sets that have already been combined in previous steps.
+- A (possibly empty) list of failed past reasoning steps grouped by reason.
 
 Your task for each step:
 - State what new premise you intend for the inference engine to derive. This premise 
@@ -33,8 +33,8 @@ Your task for each step:
   current theory is insufficient.
 - Choose ONE rule (with a head and body) and ONE OR MORE facts (with a head only) by their premise IDs 
   that should be combined to derive the new premise via the inference step.
-- You MUST NOT choose a set of premises that is contained in the provided list of previously 
-  combined premise‑ID sets, as they have been already explored.
+- You MUST NOT choose a set of premises that has been previously combined to produce an existing premise.
+- Use the failed-step history to avoid repeating choices that failed for known reasons.
 
 Output MUST be a single JSON object with the fields:
 - "proposed_new_premise": string or null (a Prolog‑style clause WITHOUT
@@ -53,7 +53,7 @@ def select_next_step(
     premises: List[Premise],
     answer_spec: AnswerSpec,
     llm: LLMClient,
-    previous_premise_sets: Optional[List[List[int]]] = None,
+    failed_steps_context: str = "",
     *,
     model: str | None = None,
     temperature: float | None = None,
@@ -63,7 +63,7 @@ def select_next_step(
     """
     Ask the LLM which premises to combine next and what goal to pursue.
     """
-    user_content = _build_user_content(problem, premises, answer_spec, previous_premise_sets)
+    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     system_prompt = system_prompt_override or SYSTEM_PROMPT
     data = llm.generate_json(
         system_prompt,
@@ -79,25 +79,16 @@ def _build_user_content(
     problem: str,
     premises: List[Premise],
     answer_spec: AnswerSpec,
-    previous_premise_sets: Optional[List[List[int]]] = None,
+    failed_steps_context: str = "",
 ) -> str:
     premises_block = render_premises(premises, verbosity_level=2)
-    previous_sets_block = ""
-    if previous_premise_sets:
-        formatted_sets = ", ".join(
-            "{" + ", ".join(str(pid) for pid in sorted(s)) + "}"
-            for s in previous_premise_sets
-        )
-        previous_sets_block = (
-            "Previously combined premise ID sets (do NOT choose any of these exact combinations again):\n"
-            f"{{{formatted_sets},}}\n\n"
-        )
+    failed_block = failed_steps_context or ""
     return (
         "Problem:\n"
         f"{problem.strip()}\n\n"
         "Current premises (by ID):\n"
         f"{premises_block}\n\n"
-        f"{previous_sets_block}"
+        f"{failed_block}"
         "Answer head predicate:\n"
         f"{answer_spec.target}\n\n"
         "Decide the next reasoning step following the instructions."
@@ -148,7 +139,7 @@ async def select_next_step_async(
     premises: List[Premise],
     answer_spec: AnswerSpec,
     llm_exec: LLMExecutor,
-    previous_premise_sets: Optional[List[List[int]]] = None,
+    failed_steps_context: str = "",
     *,
     model: str | None = None,
     temperature: float | None = None,
@@ -158,7 +149,7 @@ async def select_next_step_async(
     """
     Async version: ask the LLM which premises to combine next via LLMExecutor.
     """
-    user_content = _build_user_content(problem, premises, answer_spec, previous_premise_sets)
+    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     system_prompt = system_prompt_override or SYSTEM_PROMPT
     data = await llm_exec.generate_json(
         system_prompt,
