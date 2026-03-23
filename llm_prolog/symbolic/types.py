@@ -361,7 +361,7 @@ def _parse_term(token: str) -> Term:
     if not token:
         raise ValueError("Empty term token")
     # Simple heuristic: Prolog‑style variables start with uppercase.
-    if token[0].isupper():
+    if token[0].isupper() or token.startswith("_"):
         return Term.variable(token)
     return Term.constant(token)
 
