@@ -49,12 +49,18 @@ Design details are in `llm-prolog/llm_prolog_plan.md`.
 ## Requirements
 - **Python 3**.
 - **OpenRouter API key**: set `OPENROUTER_API_KEY` in your environment.
-- **Dependencies**: the code uses `requests` for the OpenRouter API.
+- **Dependencies**: install from `requirements_23Mar2026.txt`.
+- **SWI-Prolog runtime** (required for symbolic inference backend):
+  - macOS: `brew install swi-prolog`
+  - Verify install with `swipl --version`
 
 ## Configuration
 
 - **OpenRouter**: API key and optional overrides (e.g. `OPENROUTER_MODEL`) are handled in `llm-prolog/config.py`. Default model is `openai/gpt-4.1-mini`.
 - **Pipeline**: `PipelineConfig` in `pipeline.py` supports `max_steps` and an `explain` flag for NL explanations.
+- **Inference backend policy**:
+  - `LLM_PROLOG_INFERENCE_POLICY=strict` (default): require `pySwip` + SWI-Prolog and raise an error if unavailable.
+  - `LLM_PROLOG_INFERENCE_POLICY=fallback`: automatically use the legacy Python inference path if Prolog backend init fails.
 
 ## Usage
 

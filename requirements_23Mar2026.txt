@@ -19,6 +19,7 @@ packaging==26.0
 pandas==3.0.1
 pyarrow==23.0.1
 Pygments==2.19.2
+pyswip==0.3.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 PyYAML==6.0.3
