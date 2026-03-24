@@ -61,10 +61,14 @@ class Term:
             return self.name.strip()
         return f"'{_escape_atom(self.name)}'"
 
+
+PredicateArg = Union[Term, "Predicate"]
+
+
 @dataclass(frozen=True)
 class Predicate:
     name: str
-    args: Tuple[Term, ...]
+    args: Tuple[PredicateArg, ...]
 
     def __repr__(self) -> str:
         return f"Predicate(name={self.name!r}, args={self.args!r})"
@@ -183,8 +187,18 @@ class AnswerSpec:
     variable_name: str = field(init=False)
 
     def __post_init__(self) -> None:
+        def collect_var_names(arg: PredicateArg) -> set[str]:
+            if isinstance(arg, Term):
+                return {arg.name} if arg.is_variable else set()
+            names: set[str] = set()
+            for nested in arg.args:
+                names.update(collect_var_names(nested))
+            return names
+
         # Collect distinct logical variable names across all arguments.
-        var_names = {t.name for t in self.target.args if t.is_variable}
+        var_names: set[str] = set()
+        for arg in self.target.args:
+            var_names.update(collect_var_names(arg))
         if not var_names:
             raise ValueError(
                 "AnswerSpec.target must contain exactly one logical variable, "
@@ -430,6 +444,16 @@ def _prolog_atom_to_str(value: object) -> str:
     return str(value)
 
 
+def _parse_predicate_arg_text(token: str) -> PredicateArg:
+    token = token.strip()
+    if not token:
+        raise ValueError("Empty predicate argument")
+    # Assumes nested predicates are in prefix format with brackets
+    if "(" in token and token.endswith(")"):
+        return parse_predicate(token)
+    return _parse_term(token)
+
+
 def _ensure_cogs402_parse_helpers(prolog) -> None:
     """
     Register small SWI predicates used only for parse_predicate.
@@ -501,7 +525,7 @@ def _parse_predicate_swi(text: str, prolog) -> Predicate:
     else:
         arg_strs = list(raw_strs)
     arg_strs_py = [_prolog_atom_to_str(s).strip() for s in arg_strs]
-    args = tuple(_parse_term(s) for s in arg_strs_py)
+    args = tuple(_parse_predicate_arg_text(s) for s in arg_strs_py)
     return Predicate(name=name, args=args)
 
 
@@ -533,6 +557,30 @@ def _parse_predicate_manual(text: str) -> Predicate:
             ),
         )
 
+    def _split_top_level_commas(raw: str) -> List[str]:
+        parts: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for ch in raw:
+            if ch == "(":
+                depth += 1
+                current.append(ch)
+            elif ch == ")":
+                if depth > 0:
+                    depth -= 1
+                current.append(ch)
+            elif ch == "," and depth == 0:
+                segment = "".join(current).strip()
+                if segment:
+                    parts.append(segment)
+                current = []
+            else:
+                current.append(ch)
+        tail = "".join(current).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
     if "(" not in text:
         return Predicate(name=text, args=())
 
@@ -541,13 +589,15 @@ def _parse_predicate_manual(text: str) -> Predicate:
     if not rest.endswith(")"):
         raise ValueError(f"Invalid predicate string (missing ')'): {text}")
     arg_str = rest[:-1]
-    raw_args = [a.strip() for a in arg_str.split(",") if a.strip()]
-    args = tuple(_parse_term(a) for a in raw_args)
+    raw_args = _split_top_level_commas(arg_str)
+    args = tuple(_parse_predicate_arg_text(a) for a in raw_args)
     # Also accept functional form `is(LHS, RHS_EXPR)` and normalize it.
     if name == "is":
         if len(args) != 2:
             raise ValueError(f"Invalid is/2 predicate arity: {text}")
         lhs, rhs = args
+        if not isinstance(lhs, Term):
+            raise ValueError(f"Invalid is/2 LHS expression: {text}")
         if rhs.is_variable:
             # `is/2` evaluates the RHS expression; a bare variable RHS is not
             # a supported expression in this project representation.

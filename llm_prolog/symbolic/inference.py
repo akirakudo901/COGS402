@@ -147,6 +147,18 @@ def _py_unify_terms(a: Term, b: Term, subst: Substitution) -> Optional[Substitut
     return None
 
 
+def _py_unify_predicate_args(
+    a: Term | Predicate,
+    b: Term | Predicate,
+    subst: Substitution,
+) -> Optional[Substitution]:
+    if isinstance(a, Term) and isinstance(b, Term):
+        return _py_unify_terms(a, b, subst)
+    if isinstance(a, Predicate) and isinstance(b, Predicate):
+        return _py_unify_predicates(a, b, subst)
+    return None
+
+
 def _py_unify_predicates(a: Predicate, b: Predicate, subst: Optional[Substitution] = None) -> Optional[Substitution]:
     """
     Unify two predicates with the same name and arity.
@@ -155,7 +167,7 @@ def _py_unify_predicates(a: Predicate, b: Predicate, subst: Optional[Substitutio
         return None
     subst = {} if subst is None else dict(subst)
     for ta, tb in zip(a.args, b.args):
-        subst = _py_unify_terms(ta, tb, subst)
+        subst = _py_unify_predicate_args(ta, tb, subst)
         if subst is None:
             return None
     return subst
@@ -182,26 +194,32 @@ def unify_predicates(a: Predicate, b: Predicate, subst: Optional[Substitution] =
 
 def apply_subst_predicate(pred: Predicate, subst: Substitution) -> Predicate:
     """Apply a substitution to a predicate, returning a new predicate."""
+    def apply_subst_arg(arg: Term | Predicate) -> Term | Predicate:
+        if isinstance(arg, Predicate):
+            return apply_subst_predicate(arg, subst)
+        if arg.is_variable and arg.name in subst:
+            return subst[arg.name]
+        return arg
+
     # Special-case our internal arithmetic builtin.
     if pred.name == "mathIs" and len(pred.args) == 2:
         lhs, rhs_expr = pred.args
-        # Apply substitution to LHS term.
-        if lhs.is_variable and lhs.name in subst:
-            lhs = subst[lhs.name]
+        lhs = apply_subst_arg(lhs)
+        rhs_expr = apply_subst_arg(rhs_expr)
 
         # Rewrite RHS expression string by substituting known variables.
-        expr = rhs_expr.name
-        for var_name, bound_term in subst.items():
-            if not bound_term.is_variable:
-                expr = re.sub(rf"\b{re.escape(var_name)}\b", bound_term.name, expr)
+        # TODO might be obsolete now that we can resursively define Predicate for
+        #      inner math expressions as well
+        if isinstance(rhs_expr, Term):
+            expr = rhs_expr.name
+            for var_name, bound_term in subst.items():
+                if not bound_term.is_variable:
+                    expr = re.sub(rf"\b{re.escape(var_name)}\b", bound_term.name, expr)
         return Predicate(name="mathIs", args=(lhs, Term.constant(expr)))
 
-    new_args: List[Term] = []
+    new_args: List[Term | Predicate] = []
     for t in pred.args:
-        if t.is_variable and t.name in subst:
-            new_args.append(subst[t.name])
-        else:
-            new_args.append(t)
+        new_args.append(apply_subst_arg(t))
     return Predicate(name=pred.name, args=tuple(new_args))
 
 
@@ -403,6 +421,15 @@ def _prolog_value_to_term(value: object) -> Optional[Term]:
     return _parse_term(text)
 
 
+def _collect_variable_names_from_arg(arg: Term | Predicate) -> List[str]:
+    if isinstance(arg, Term):
+        return [arg.name] if arg.is_variable else []
+    names: List[str] = []
+    for nested in arg.args:
+        names.extend(_collect_variable_names_from_arg(nested))
+    return names
+
+
 def _reduce_rule_via_prolog_truth_and_constants(rule: Rule) -> Clause:
     """
     General SWI-Prolog simplifier for rule bodies.
@@ -430,7 +457,11 @@ def _reduce_rule_via_prolog_truth_and_constants(rule: Rule) -> Clause:
 
         for atom in current.body:
             atom = apply_subst_predicate(atom, subst)
-            free_vars = [t.name for t in atom.args if t.is_variable]
+            free_vars = list(dict.fromkeys(
+                name
+                for arg in atom.args
+                for name in _collect_variable_names_from_arg(arg)
+            ))
 
             goals = [
                 f"{var_name} = {bound_term.to_prolog_text()}"
