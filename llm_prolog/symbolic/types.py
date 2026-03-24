@@ -15,7 +15,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+import threading
 from typing import Dict, List, Optional, Tuple, Union
+
+try:
+    from pyswip import Prolog as _PySwipProlog  # type: ignore[reportMissingImports]
+except Exception:  # pragma: no cover
+    _PySwipProlog = None  # type: ignore[assignment,misc]
+
+_PARSE_PROLOG_LOCK = threading.Lock()
+_PARSE_PROLOG: object = None  # Prolog() instance, or False if unavailable
 
 _NUMERIC_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
@@ -391,12 +400,117 @@ def _parse_term(token: str) -> Term:
     return Term.constant(token)
 
 
-def parse_predicate(text: str) -> Predicate:
-    """
-    Parse a simple predicate of the form `name(arg1, arg2, ...)`.
+def _atom_literal_for_read_term_from_atom(text: str) -> str:
+    """Embed *text* as a Prolog single-quoted atom literal (for read_term_from_atom/3)."""
+    inner = text.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{inner}'"
 
-    This intentionally supports only a limited subset: no nested function
-    symbols or lists. Arguments are split on commas at the top level.
+
+def _get_parse_prolog():
+    """Lazily construct one pySwip Prolog instance for parsing, or False if unavailable."""
+    global _PARSE_PROLOG
+    if _PARSE_PROLOG is not None:
+        return _PARSE_PROLOG
+    with _PARSE_PROLOG_LOCK:
+        if _PySwipProlog is None:
+            _PARSE_PROLOG = False
+            return _PARSE_PROLOG
+        try:
+            _PARSE_PROLOG = _PySwipProlog()
+        except Exception:
+            _PARSE_PROLOG = False
+        return _PARSE_PROLOG
+
+
+def _prolog_atom_to_str(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _ensure_cogs402_parse_helpers(prolog) -> None:
+    """
+    Register small SWI predicates used only for parse_predicate.
+
+    `term_string/2` turns variables into internal names (_NNN); we combine
+    `read_term_from_atom/3` with `variable_names/1` so named variables keep
+    their source spellings.
+    """
+    if getattr(prolog, "_cogs402_parse_helpers_loaded", False):
+        return
+    # Extend helpers to handle mathIs/is/2 predicates; handle arbitrary expressions by rewriting variables with VN names.
+    prolog.assertz(
+        "cogs402_arg_source_string(VN, Arg, Out) :- "
+        "var(Arg), member(N=Var, VN), Arg == Var, !, Out = N"
+    )
+    # Special-case: if the argument is a recursive compound, we want to show the 
+    # entire argument with variable names preserved; e.g. RHS of is/2, mathIs/2.
+    prolog.assertz(
+        "cogs402_arg_source_string(VN, Arg, Out) :- "
+        "compound(Arg), "
+        # "(compound_name_arity(Arg, is, 2); compound_name_arity(Arg, mathIs, 2)), "
+        "Arg =.. [F, Lhs, Rhs], "
+        "cogs402_arg_source_string(VN, Lhs, LhsS), "
+        "cogs402_arg_source_string(VN, Rhs, RhsS), "
+        "atomic_list_concat([F, '(', LhsS, ', ', RhsS, ')'], Out)"
+    )
+    # Default: use term_string if no special handling.
+    prolog.assertz(
+        "cogs402_arg_source_string(VN, Arg, Out) :- term_string(Arg, Out)"
+    )
+    prolog.assertz(
+        "cogs402_args_source_strings(_, [], [])"
+    )
+    prolog.assertz(
+        "cogs402_args_source_strings(VN, [A|As], [S|Ss]) :- "
+        "cogs402_arg_source_string(VN, A, S), "
+        "cogs402_args_source_strings(VN, As, Ss)"
+    )
+    prolog.assertz(
+        "cogs402_parse_predicate_text(AtomStr, Name, ArgStrs) :- "
+        "read_term_from_atom(AtomStr, T, "
+        "[syntax_errors(error), variable_names(VN)]), "
+        "( compound(T) -> compound_name_arguments(T, Name, Args) "
+        "; atom(T) -> Name = T, Args = [] ), "
+        "cogs402_args_source_strings(VN, Args, ArgStrs)"
+    )
+    prolog._cogs402_parse_helpers_loaded = True  # type: ignore[attr-defined]
+
+
+def _parse_predicate_swi(text: str, prolog) -> Predicate:
+    """
+    Use SWI-Prolog's tokenizer/parser (read_term_from_atom/3) to obtain the
+    functor and argument substrings, then map them into Predicate / Term.
+    """
+    _ensure_cogs402_parse_helpers(prolog)
+    atom_lit = _atom_literal_for_read_term_from_atom(text)
+    
+    goal = f"cogs402_parse_predicate_text({atom_lit}, Name, ArgStrs)"
+    solutions = list(prolog.query(goal, maxresult=1))
+    if not solutions:
+        raise ValueError(f"SWI-Prolog could not parse predicate string: {text!r}")
+    sol = solutions[0]
+    name = _prolog_atom_to_str(sol.get("Name")).strip()
+    raw_strs = sol.get("ArgStrs")
+    if raw_strs is None:
+        raise ValueError(f"Unexpected SWI parse result for: {text!r}")
+    if not isinstance(raw_strs, (list, tuple)):
+        arg_strs = [raw_strs]
+    else:
+        arg_strs = list(raw_strs)
+    arg_strs_py = [_prolog_atom_to_str(s).strip() for s in arg_strs]
+    args = tuple(_parse_term(s) for s in arg_strs_py)
+    return Predicate(name=name, args=args)
+
+
+def _parse_predicate_manual(text: str) -> Predicate:
+    """
+    Regex/comma-split fallback when SWI-Prolog is not available or fails.
+
+    Supports only a limited subset: no nested function symbols or lists at
+    the comma-split level. Prefer `_parse_predicate_swi` when possible.
     """
     text = text.strip()
     if not text:
@@ -441,6 +555,28 @@ def parse_predicate(text: str) -> Predicate:
         return Predicate(name="mathIs", args=(lhs, rhs))
 
     return Predicate(name=name, args=args)
+
+
+def parse_predicate(text: str) -> Predicate:
+    """
+    Parse a predicate of the form `name(arg1, arg2, ...)` or `name`.
+
+    When pySwip and SWI-Prolog are available, uses the engine's
+    `read_term_from_atom/3` and `compound_name_arguments/3` so functor and
+    arguments follow Prolog syntax (parentheses, commas, operators such as
+    `is/2`). Otherwise falls back to a small manual parser.
+    """
+    text = text.strip()
+    if not text:
+        raise ValueError("Empty predicate string")
+
+    backend = _get_parse_prolog()
+    if backend is not False:
+        try:
+            return _parse_predicate_swi(text, backend)
+        except Exception:
+            pass
+    return _parse_predicate_manual(text)
 
 
 def _split_predicate_atoms(body_str: str) -> List[str]:
