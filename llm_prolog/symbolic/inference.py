@@ -69,16 +69,10 @@ class _PrologBackend:
             goals.append(f"{var_name} = {bound_term.to_prolog_text()}")
         goals.append(f"{pred_a} = {pred_b}")
         query = ", ".join(goals)
-        # TODO DEBUG REMOVE
-        print(f"query: {query}")
-        # TODO DEBUG REMOVE END
-
+        
         try:
             with self._lock:
                 solutions = list(self._prolog.query(query, maxresult=1))
-                # TODO DEBUG REMOVE
-                print(f"solutions: {solutions}")
-                # TODO DEBUG REMOVE END
         except Exception:
             return None
         if not solutions:
