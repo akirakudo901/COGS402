@@ -149,9 +149,14 @@ def gsm8k_main_validator(result: object, mode: PipelineMode) -> Optional[float]:
     return None
 
 
-def gsm8k_success_measure(example: GSM8KExample, obtained: Optional[float]) -> bool:
-    """Success = exact match of float answer."""
-    return obtained is not None and obtained == example.ground_truth
+def gsm8k_success_measure(example: GSM8KExample, obtained: Optional[float], atol: float = 1e-3) -> bool:
+    """
+    Success: true if the obtained value is close to the ground truth, allowing for small errors due to
+    inexact computation (e.g., fractions).
+    """
+    if obtained is None:
+        return False
+    return abs(obtained - example.ground_truth) <= atol
 
 
 def run_single_example_gsm8k(example: GSM8KExample = EXAMPLE_1) -> None:
