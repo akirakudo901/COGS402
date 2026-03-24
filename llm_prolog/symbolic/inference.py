@@ -14,7 +14,7 @@ import re
 import threading
 from typing import Dict, List, Optional, Tuple
 
-from .types import Clause, Fact, Predicate, Premise, Rule, Term, _parse_term
+from .types import Clause, Fact, Predicate, Premise, Rule, Term, _parse_term, format_clause, parse_fact_or_rule
 
 try:
     from pyswip import Prolog  # type: ignore[reportMissingImports]
@@ -69,10 +69,16 @@ class _PrologBackend:
             goals.append(f"{var_name} = {bound_term.to_prolog_text()}")
         goals.append(f"{pred_a} = {pred_b}")
         query = ", ".join(goals)
+        # TODO DEBUG REMOVE
+        print(f"query: {query}")
+        # TODO DEBUG REMOVE END
 
         try:
             with self._lock:
                 solutions = list(self._prolog.query(query, maxresult=1))
+                # TODO DEBUG REMOVE
+                print(f"solutions: {solutions}")
+                # TODO DEBUG REMOVE END
         except Exception:
             return None
         if not solutions:
@@ -370,21 +376,147 @@ def _infer_rule_fact(rule: Rule, fact: Fact) -> Optional[Clause]:
             return Fact(predicate=head_instantiated)
         reduced: Clause = Rule(head=head_instantiated, body=tuple(remaining))
         if isinstance(reduced, Rule):
-            reduced = _reduce_mathis_in_rule(reduced)
+            reduced = _reduce_rule_via_prolog_truth_and_constants(reduced)
         return reduced
     return None
 
 
-def _maybe_reduce_mathis(clause: Clause) -> Tuple[Clause, bool]:
+def _predicate_to_prolog_goal_text(pred: Predicate) -> str:
     """
-    If the clause is a Rule, attempt to reduce mathIs/2 builtins in its body.
-    Returns the possibly reduced clause and a boolean indicating whether reduction occurred.
+    Render an internal predicate as an executable Prolog goal text.
+
+    Internally we store arithmetic evaluation as `mathIs/2`; SWI executes it as
+    the `is/2` operator.
     """
+    if pred.name == "mathIs" and len(pred.args) == 2:
+        lhs, rhs = pred.args
+        return f"{lhs.to_prolog_text()} is {rhs.name.strip()}"
+    return pred.to_prolog_text()
+
+
+def _prolog_value_to_term(value: object) -> Optional[Term]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return _parse_term(text)
+
+
+def _reduce_rule_via_prolog_truth_and_constants(rule: Rule) -> Clause:
+    """
+    General SWI-Prolog simplifier for rule bodies.
+
+    For each body atom, execute it as a Prolog goal under currently known
+    substitutions:
+    - If the goal is provably true and fully ground, remove it.
+    - If the goal yields only ground bindings for its free variables, apply the
+      bindings and remove that goal.
+    """
+    try:
+        backend = _get_prolog_backend()
+    except Exception:
+        if _prefer_python_fallback_on_backend_error():
+            return rule
+        raise
+
+    current: Rule = rule
+    subst: Substitution = {}
+
+    changed = True
+    while changed:
+        changed = False
+        new_body: List[Predicate] = []
+
+        for atom in current.body:
+            atom = apply_subst_predicate(atom, subst)
+            free_vars = [t.name for t in atom.args if t.is_variable]
+
+            goals = [
+                f"{var_name} = {bound_term.to_prolog_text()}"
+                for var_name, bound_term in subst.items()
+            ]
+            goals.append(_predicate_to_prolog_goal_text(atom))
+            query = ", ".join(goals)
+
+            try:
+                with backend._lock:
+                    solutions = list(backend._prolog.query(query, maxresult=1))
+            except Exception:
+                new_body.append(atom)
+                continue
+
+            if not solutions:
+                new_body.append(atom)
+                continue
+
+            solution = solutions[0]
+            candidate_bindings: List[Tuple[str, Term]] = []
+            reducible = True
+
+            for var_name in free_vars:
+                raw = solution.get(var_name)
+                term = _prolog_value_to_term(raw)
+                # Not uniquely reduced to a ground constant yet.
+                if term is None or term.is_variable:
+                    reducible = False
+                    break
+                candidate_bindings.append((var_name, term))
+
+            if not reducible:
+                new_body.append(atom)
+                continue
+
+            local_subst = dict(subst)
+            ok = True
+            for var_name, term in candidate_bindings:
+                unified = _py_unify_terms(Term.variable(var_name), term, local_subst)
+                if unified is None:
+                    ok = False
+                    break
+                local_subst = unified
+
+            if not ok:
+                new_body.append(atom)
+                continue
+
+            subst = local_subst
+            changed = True
+            # Goal satisfied and reduced; omit from new body.
+
+        if changed:
+            head2 = apply_subst_predicate(current.head, subst)
+            body2 = tuple(apply_subst_predicate(a, subst) for a in new_body)
+            current = Rule(head=head2, body=body2)
+        else:
+            current = Rule(head=current.head, body=tuple(new_body))
+
+    if not current.body:
+        return Fact(predicate=current.head)
+    return current
+
+
+def _reduce_clause_text_by_prolog(clause_text: str) -> Clause:
+    """
+    Parse and simplify a Prolog clause represented as text.
+
+    This accepts any parseable fact/rule text. Facts are returned unchanged.
+    Rules are simplified by removing goals that are provably true and by
+    propagating single-goal constant reductions.
+    """
+    clause = parse_fact_or_rule(clause_text)
     if isinstance(clause, Rule):
-        reduced = _reduce_mathis_in_rule(clause)
-        if reduced != clause:
-            return reduced, True
-    return clause, False
+        return _reduce_rule_via_prolog_truth_and_constants(clause)
+    return clause
+
+
+def _maybe_reduce_clause_with_prolog(clause: Clause) -> Tuple[Clause, bool]:
+    """
+    Try to simplify a clause via SWI-Prolog semantics.
+    Returns the possibly reduced clause and whether reduction occurred.
+    """
+    reduced = _reduce_clause_text_by_prolog(format_clause(clause))
+    return reduced, (reduced != clause)
 
 def reduce_rule_by_facts(premises: Tuple[Premise, ...]) -> Optional[Clause]:
     """
@@ -425,8 +557,8 @@ def reduce_rule_by_facts(premises: Tuple[Premise, ...]) -> Optional[Clause]:
     current: Clause = rule
     any_reduction = False
 
-    # Opportunistically reduce math expressions before using facts.
-    current, reduced = _maybe_reduce_mathis(current)
+    # Opportunistically reduce builtins/truthy goals before using facts.
+    current, reduced = _maybe_reduce_clause_with_prolog(current)
     any_reduction = any_reduction or reduced
 
     for fact in fact_clauses:
@@ -437,8 +569,8 @@ def reduce_rule_by_facts(premises: Tuple[Premise, ...]) -> Optional[Clause]:
             current = derived
             any_reduction = True
 
-            # Reduce math expressions again after applying fact.
-            current, reduced = _maybe_reduce_mathis(current)
+            # Reduce builtins/truthy goals again after applying a fact.
+            current, reduced = _maybe_reduce_clause_with_prolog(current)
             any_reduction = any_reduction or reduced
     return current if any_reduction else None
 
