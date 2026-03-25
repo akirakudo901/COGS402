@@ -87,6 +87,90 @@ class InferenceBackendIntegrationShapeTests(unittest.TestCase):
                     Predicate(name="value", args=(Term.constant("5"),)),
                 )
 
+    def test_two_slots_pool_order_consumes_first_matching_producers(self):
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
+            with mock.patch.object(inference, "_get_prolog_backend", return_value=_FakeBackend()):
+                consumer = Rule(
+                    head=Predicate(name="goal", args=()),
+                    body=(
+                        Predicate(name="p", args=(Term.constant("a"),)),
+                        Predicate(name="p", args=(Term.constant("b"),)),
+                    ),
+                )
+                fc = Fact(predicate=Predicate(name="p", args=(Term.constant("c"),)))
+                fa = Fact(predicate=Predicate(name="p", args=(Term.constant("a"),)))
+                fb = Fact(predicate=Predicate(name="p", args=(Term.constant("b"),)))
+                premises = [
+                    Premise(id=1, clause=consumer),
+                    Premise(id=2, clause=fc),
+                    Premise(id=3, clause=fa),
+                    Premise(id=4, clause=fb),
+                ]
+                clause = inference.infer_new_premise(premises)
+                self.assertIsInstance(clause, Fact)
+                assert isinstance(clause, Fact)
+                self.assertEqual(clause.predicate, Predicate(name="goal", args=()))
+
+    def test_rule_producer_splices_body_at_slot(self):
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
+            with mock.patch.object(inference, "_get_prolog_backend", return_value=_FakeBackend()):
+                consumer = Rule(
+                    head=Predicate(name="h", args=(Term.variable("B"),)),
+                    body=(Predicate(name="bird", args=(Term.variable("B"),)),),
+                )
+                prod = Rule(
+                    head=Predicate(name="bird", args=(Term.variable("X"),)),
+                    body=(Predicate(name="penguin", args=(Term.variable("X"),)),),
+                )
+                premises = [Premise(id=1, clause=consumer), Premise(id=2, clause=prod)]
+                clause = inference.infer_new_premise(premises)
+                self.assertIsInstance(clause, Rule)
+                assert isinstance(clause, Rule)
+                self.assertEqual(len(clause.body), 1)
+                self.assertEqual(clause.body[0].name, "penguin")
+
+    def test_infer_new_premise_requires_consumer_rule_when_multiple_premises(self):
+        premises = [
+            Premise(id=1, clause=Fact(predicate=Predicate(name="p", args=()))),
+            Premise(id=2, clause=Fact(predicate=Predicate(name="q", args=()))),
+        ]
+        self.assertIsNone(inference.infer_new_premise(premises))
+
+    def test_validate_inference_premise_selection_errors(self):
+        bad = [
+            Premise(id=1, clause=Fact(predicate=Predicate(name="p", args=()))),
+            Premise(id=2, clause=Fact(predicate=Predicate(name="q", args=()))),
+        ]
+        msg = inference.validate_inference_premise_selection(bad)
+        self.assertIsNotNone(msg)
+        assert msg is not None
+        self.assertIn("consumer", msg.lower())
+
+        class _NotClause:
+            pass
+
+        bad2 = [
+            Premise(id=1, clause=Rule(head=Predicate(name="h", args=()), body=())),
+            Premise(id=2, clause=_NotClause()),  # type: ignore[arg-type]
+        ]
+        msg2 = inference.validate_inference_premise_selection(bad2)
+        self.assertIsNotNone(msg2)
+        assert msg2 is not None
+        self.assertIn("producers", msg2.lower())
+
+    def test_validate_inference_premise_selection_accepts_rule_and_producers(self):
+        ok = [
+            Premise(
+                id=1,
+                clause=Rule(
+                    head=Predicate(name="g", args=()),
+                    body=(Predicate(name="p", args=()),),
+                ),
+            ),
+            Premise(id=2, clause=Fact(predicate=Predicate(name="p", args=()))),
+        ]
+        self.assertIsNone(inference.validate_inference_premise_selection(ok))
+
 
 if __name__ == "__main__":
     unittest.main()
