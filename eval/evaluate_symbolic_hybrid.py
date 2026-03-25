@@ -32,13 +32,14 @@ def get_gsm8K_eval_task(
     from_train_split : bool = True, 
     ids : Optional[Sequence[int]] = None
 ) -> SimpleEvalTask:
+    split_tag = "train" if from_train_split else "test"
     if not size and not ids:
         raise Exception("Either 'size' or 'ids' must be given to 'get_gsm8K_eval_task'.")
     elif size:
         if size and ids:
             print("size and ids given to 'get_gsm8K_eval_task', size takes priority.")
         return SimpleEvalTask(
-            task_id=f"gsm8k:{size}exs", 
+            task_id=f"gsm8k:{size}exs:{split_tag}:seed={seed}", 
             examples=load_gsm8k_examples(size=size, seed=seed, from_train_split=from_train_split), 
             validator_fn=gsm8k_main_validator, 
             success_measure_fn=gsm8k_success_measure,
@@ -47,7 +48,7 @@ def get_gsm8K_eval_task(
         )
     elif ids:
         return SimpleEvalTask(
-            task_id=f"gsm8k:ids={ids}", 
+            task_id=f"gsm8k:ids={ids}:{split_tag}", 
             examples=load_gsm8k_examples(size=0, from_train_split=from_train_split, ids=ids), 
             validator_fn=gsm8k_main_validator, 
             success_measure_fn=gsm8k_success_measure,
