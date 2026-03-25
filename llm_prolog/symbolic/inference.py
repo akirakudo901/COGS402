@@ -3,7 +3,9 @@ Symbolic inference engine for the LLM‑Prolog pipeline.
 
 This module implements a very small Horn‑clause engine:
 - Unification between terms and predicates.
-- Deriving a new clause (Fact or Rule) from one rule and one or more facts.
+- Deriving a new clause (Fact or Rule) from one consumer rule and ordered
+  producers (facts or rules), using fixed body slots and two-pass global
+  simplification (start and end only).
 """
 
 from __future__ import annotations
@@ -225,6 +227,67 @@ def _as_rule(clause: Clause) -> Optional[Rule]:
     return clause if isinstance(clause, Rule) else None
 
 
+def _collect_variable_names_in_rule(rule: Rule) -> set[str]:
+    names: set[str] = set()
+    for arg in rule.head.args:
+        names.update(_collect_variable_names_from_arg(arg))
+    for atom in rule.body:
+        for arg in atom.args:
+            names.update(_collect_variable_names_from_arg(arg))
+    return names
+
+
+def _rename_term_vars(term: Term, mapping: Dict[str, str]) -> Term:
+    if term.is_variable and term.name in mapping:
+        return Term.variable(mapping[term.name])
+    return term
+
+
+def _rename_arg_vars(arg: Term | Predicate, mapping: Dict[str, str]) -> Term | Predicate:
+    if isinstance(arg, Predicate):
+        return _rename_predicate_vars(arg, mapping)
+    return _rename_term_vars(arg, mapping)
+
+
+def _rename_predicate_vars(pred: Predicate, mapping: Dict[str, str]) -> Predicate:
+    return Predicate(name=pred.name, args=tuple(_rename_arg_vars(a, mapping) for a in pred.args))
+
+
+def _standardize_rule_apart(producer: Rule, forbidden: set[str]) -> Rule:
+    """
+    Rename all variables in `producer` to fresh names not in `forbidden`
+    (or each other), preserving structure.
+    """
+    src_vars = sorted(_collect_variable_names_in_rule(producer))
+    if not src_vars:
+        return producer
+    used = set(forbidden)
+    mapping: Dict[str, str] = {}
+    for v in src_vars:
+        i = 0
+        while True:
+            cand = f"Fresh{i}"
+            if cand not in used:
+                mapping[v] = cand
+                used.add(cand)
+                break
+            i += 1
+    new_head = _rename_predicate_vars(producer.head, mapping)
+    new_body = tuple(_rename_predicate_vars(p, mapping) for p in producer.body)
+    return Rule(head=new_head, body=new_body)
+
+
+def _vars_from_head_and_slots(head: Predicate, slots: List[List[Predicate]]) -> set[str]:
+    names: set[str] = set()
+    for arg in head.args:
+        names.update(_collect_variable_names_from_arg(arg))
+    for sl in slots:
+        for pred in sl:
+            for arg in pred.args:
+                names.update(_collect_variable_names_from_arg(arg))
+    return names
+
+
 def _is_ground_arith_expr(expr: str) -> bool:
     """True iff expr contains no Prolog-style variables."""
     return _PROLOG_VAR_RE.search(expr) is None
@@ -366,31 +429,6 @@ def _reduce_mathis_in_rule(rule: Rule) -> Clause:
     if not current.body:
         return Fact(predicate=current.head)
     return current
-
-
-def _infer_rule_fact(rule: Rule, fact: Fact) -> Optional[Clause]:
-    """
-    Derive a new clause from a rule and a fact by unifying the fact with one
-    body atom. If that body atom was the only one, return a Fact; otherwise
-    return a new Rule with the instantiated head and remaining body atoms.
-    """
-    for i, body_atom in enumerate(rule.body):
-        subst = unify_predicates(body_atom, fact.predicate)
-        if subst is None:
-            continue
-        head_instantiated = apply_subst_predicate(rule.head, subst)
-        remaining = [
-            apply_subst_predicate(p, subst)
-            for j, p in enumerate(rule.body)
-            if j != i
-        ]
-        if not remaining:
-            return Fact(predicate=head_instantiated)
-        reduced: Clause = Rule(head=head_instantiated, body=tuple(remaining))
-        if isinstance(reduced, Rule):
-            reduced = _reduce_rule_via_prolog_truth_and_constants(reduced)
-        return reduced
-    return None
 
 
 def _predicate_to_prolog_goal_text(pred: Predicate) -> str:
@@ -543,67 +581,168 @@ def _maybe_reduce_clause_with_prolog(clause: Clause) -> Tuple[Clause, bool]:
     reduced = _reduce_clause_text_by_prolog(format_clause(clause))
     return reduced, (reduced != clause)
 
-def reduce_rule_by_facts(premises: Tuple[Premise, ...]) -> Optional[Clause]:
+
+def _global_simplify_clause(clause: Clause) -> Tuple[Clause, bool]:
     """
-    Derive a new clause from a tuple of premises containing exactly one rule,
-    zero or more facts, and possibly reduce built-in math expressions.
-
-    - Math expressions (mathIs/2) in the rule body are opportunistically reduced
-      even before considering facts. If any binding or rewriting can be done through
-      mathIs/2, it is performed at each iteration, even if no fact is consumed.
-    - One rule + one fact: unify the fact with one body atom. If it was the
-      only body atom, return a Fact (instantiated head); otherwise return a
-      new Rule with instantiated head and remaining body atoms. Each reduction 
-      may further allow math expression reduction in the rule.
-    - One rule + multiple facts: reduce the rule by each fact in turn; after each 
-      reduction of a fact, also reduce mathIs/2 in the rule. Return the final 
-      derived clause (Fact or Rule) if at least one reduction occurred.
-
-    Example (bird / swims / flightless):
-      [1] bird(penguin).  [2] swims(penguin).  [3] flightless(B) :- bird(B), swims(B).
-      Step 1: premises = ([1], [3]) -> flightless(penguin) :- swims(penguin).
-      Step 2: premises = ([2], [4]) -> flightless(penguin).
-
-    Example with math (lives/2):
-      [1] mathIs(A, 2+3). [2] foo(A). [3] bar(B) :- foo(B), mathIs(B, 2+3).
-      Step 1: mathIs(B, 2+3) is reduced to mathIs(B, 5), and, if B unifies, B=5.
+    One global simplify pass: reduce mathIs/2 on rules, then SWI-based
+    simplification. Used only at the start and end of inference (not between
+    slot iterations).
     """
-    rules = [p for p in premises if _as_rule(p.clause) is not None]
-    facts = [p for p in premises if _as_fact(p.clause) is not None]
-    if len(rules) != 1:
+    any_changed = False
+    current = clause
+    if isinstance(current, Rule):
+        m = _reduce_mathis_in_rule(current)
+        if m != current:
+            any_changed = True
+            current = m
+    cur2, r2 = _maybe_reduce_clause_with_prolog(current)
+    if r2:
+        any_changed = True
+        current = cur2
+    return current, any_changed
+
+def _clause_to_slots_rule(clause: Clause) -> Optional[Tuple[Predicate, List[List[Predicate]]]]:
+    """Return (head, slots) where each slot is a list of predicates; None if not a Rule."""
+    if not isinstance(clause, Rule):
         return None
-    rule = _as_rule(rules[0].clause)
-    assert rule is not None
-    fact_clauses: List[Fact] = []
-    for p in facts:
-        f = _as_fact(p.clause)
-        if f is not None:
-            fact_clauses.append(f)
-    current: Clause = rule
-    any_reduction = False
+    slots = [[p] for p in clause.body]
+    return clause.head, slots
 
-    # Opportunistically reduce builtins/truthy goals before using facts.
-    current, reduced = _maybe_reduce_clause_with_prolog(current)
-    any_reduction = any_reduction or reduced
 
-    for fact in fact_clauses:
-        if not isinstance(current, Rule):
-            break
-        derived = _infer_rule_fact(current, fact)
-        if derived is not None:
-            current = derived
-            any_reduction = True
+def _slots_to_clause(head: Predicate, slots: List[List[Predicate]]) -> Clause:
+    body = tuple(p for sl in slots for p in sl)
+    if not body:
+        return Fact(predicate=head)
+    return Rule(head=head, body=body)
 
-            # Reduce builtins/truthy goals again after applying a fact.
-            current, reduced = _maybe_reduce_clause_with_prolog(current)
-            any_reduction = any_reduction or reduced
-    return current if any_reduction else None
+
+def validate_inference_premise_selection(premises: List[Premise]) -> Optional[str]:
+    """
+    Return an error message if ``premises`` cannot be used for multi-premise
+    inference (first must be a consumer ``Rule``, rest ``Fact`` or ``Rule``).
+    Return ``None`` if valid. Single-premise calls are not validated here.
+    """
+    if len(premises) < 2:
+        return None
+    first = premises[0].clause
+    if not isinstance(first, Rule):
+        return (
+            "Inference requires the first selected premise to be a rule (consumer); "
+            f"got {type(first).__name__}."
+        )
+    for p in premises[1:]:
+        c = p.clause
+        if not isinstance(c, (Fact, Rule)):
+            return (
+                "Inference requires all premises after the consumer to be facts or rules "
+                f"(producers); got {type(c).__name__} for premise id {p.id}."
+            )
+    return None
 
 
 def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
     """
-    Public entry point: attempt to derive a new clause from a list of premises
-    containing exactly one rule and one or more facts. Returns a Fact or Rule,
-    or None.
+    Derive a new clause from premises.
+
+    - If a single premise is given (a Rule), run global simplification twice
+      (start/end) and return the result if anything changed.
+    - Otherwise: first premise must be the **consumer** ``Rule``; remaining
+      premises are **producers** (``Fact`` or ``Rule``) in order.
+
+    After an opening global simplify pass, **N** body slots are frozen (one per
+    body atom). For each slot index ``i`` in order, the first producer in the
+    pool that unifies with that slot's atom (when the slot has exactly one
+    atom) is applied and removed from the pool. A fact removes the atom; a rule
+    replaces it with the producer's body (standardized apart). Slots with
+    multiple atoms (from a rule splice) are skipped for producer matching.
+    No global simplification runs between slot iterations.
+
+    Returns a ``Fact`` or ``Rule``, or ``None`` if nothing changed.
     """
-    return reduce_rule_by_facts(tuple(premises))
+    if not premises:
+        return None
+
+    if len(premises) == 1:
+        only = premises[0].clause
+        if not isinstance(only, Rule):
+            return None
+        cur, r1 = _global_simplify_clause(only)
+        if not isinstance(cur, Rule):
+            return cur if r1 else None
+        cur2, r2 = _global_simplify_clause(cur)
+        return cur2 if (r1 or r2) else None
+
+    consumer = premises[0].clause
+    if not isinstance(consumer, Rule):
+        return None
+    producer_clauses: List[Clause] = []
+    for p in premises[1:]:
+        c = p.clause
+        if not isinstance(c, (Fact, Rule)):
+            return None
+        producer_clauses.append(c)
+
+    any_reduction = False
+    current: Clause = consumer
+    cur, reduced_open = _global_simplify_clause(current)
+    if reduced_open:
+        any_reduction = True
+    current = cur
+
+    if not isinstance(current, Rule):
+        return current if any_reduction else None
+
+    parsed = _clause_to_slots_rule(current)
+    if parsed is None:
+        return None
+    head, slots = parsed
+    n = len(slots)
+    pool: List[Clause] = producer_clauses
+
+    slot_applied = False
+    for i in range(n):
+        if len(slots[i]) != 1:
+            continue
+        atom = slots[i][0]
+        for pool_idx, prod in enumerate(pool):
+            # Handle fact slotting
+            if isinstance(prod, Fact):
+                subst = unify_predicates(atom, prod.predicate)
+                if subst is None:
+                    continue
+                slots[i] = []
+            # Handle rule slotting
+            else:
+                subst_rule = _as_rule(prod)
+                assert subst_rule is not None
+                forbidden = _vars_from_head_and_slots(head, slots)
+                prod_f = _standardize_rule_apart(subst_rule, forbidden)
+                subst = unify_predicates(atom, prod_f.head)
+                if subst is None:
+                    continue
+                slots[i] = [apply_subst_predicate(p, subst) for p in prod_f.body]
+            # Apply substitution to head & other slots
+            head = apply_subst_predicate(head, subst)
+            for j in range(n):
+                slots[j] = [apply_subst_predicate(p, subst) for p in slots[j]]
+            # Remove applied object from pool_idx
+            pool.pop(pool_idx)
+            slot_applied = True
+            break
+
+    out = _slots_to_clause(head, slots)
+    cur_end, reduced_end = _global_simplify_clause(out)
+    if reduced_end:
+        any_reduction = True
+    out = cur_end
+
+    if any_reduction or slot_applied:
+        return out
+    return None
+
+
+def reduce_rule_by_facts(premises: Tuple[Premise, ...]) -> Optional[Clause]:
+    """
+    Backward-compatible alias for :func:`infer_new_premise`.
+    """
+    return infer_new_premise(list(premises))

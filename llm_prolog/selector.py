@@ -31,9 +31,12 @@ Your task for each step:
 - Indicate whether this new premise is directly the answer head goal.
 - Optionally propose new background premises (facts or rules) if the
   current theory is insufficient.
-- Choose ONE rule (with a head and body) and ONE OR MORE facts (with a head only) by their premise IDs 
-  that should be combined to derive the new premise via the inference step.
-- You MUST NOT choose a set of premises that has been previously combined to produce an existing premise.
+- Choose exactly ONE **consumer** rule (a clause with a head and body) by `selected_rule_id`.
+- Choose ONE OR MORE **producers** by listing their premise IDs in `selected_fact_ids` in the **order**
+  they should be applied. Each producer may be a **fact** (head only) or a **rule** (head and body).
+  For each goal position in the consumer, in order, the inference engine consumes the **first** producer 
+  in the remaining producers' 'pool' that unifies with that goal. Producers used for a goal are removed from the pool.
+- You MUST NOT choose an order of premises that has been previously combined to produce an existing premise.
 - Use the failed-step history to avoid repeating choices that failed for known reasons.
 
 Output MUST be a single JSON object with the fields:
@@ -43,8 +46,10 @@ Output MUST be a single JSON object with the fields:
 - "is_answer_goal": boolean.
 - "background_premises": list of strings, each a fact or rule ending
   with a period.
-- "selected_rule_id": an integer ID indicating the rule premise selected in this step.
-- "selected_fact_ids": list of integer IDs indicating fact premises selected in this step.
+- "selected_rule_id": integer ID of the **consumer** rule premise for this step.
+- "selected_fact_ids": ordered list of integer IDs of **producer** premises (each may be a fact or a
+  rule). Order matters: the engine matches slot 0 against producers in this order, then slot 1 against
+  what remains, and so on.
 """
 
 

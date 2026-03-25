@@ -21,7 +21,7 @@ from .llm_executor import LLMExecutor
 from .cot_baseline import run_cot_baseline, run_cot_baseline_async
 from .nl_symbol_converter import convert_problem_to_symbols, convert_problem_to_symbols_async
 from .selector import select_next_step, select_next_step_async
-from .symbolic.inference import infer_new_premise, unify_predicates
+from .symbolic.inference import infer_new_premise, unify_predicates, validate_inference_premise_selection
 from .symbolic.types import (
     AnswerSpec,
     PipelineResult,
@@ -272,6 +272,28 @@ def _process_symbolic_decision_step(
                 proposed_premise=decision.proposed_new_premise,
                 combined_premise_ids=decision.selected_premise_ids,
                 note=note,
+            ),
+        )
+
+    validation_note = validate_inference_premise_selection(selected_premises)
+    if validation_note is not None:
+        return (
+            premises,
+            None,
+            PipelineStep(
+                step_index=step_idx,
+                used_premise_ids=decision.selected_premise_ids,
+                new_premise=None,
+                decision=decision,
+                success=False,
+                note=validation_note,
+            ),
+            False,
+            None,
+            FailedStep.from_attempt(
+                proposed_premise=decision.proposed_new_premise,
+                combined_premise_ids=decision.selected_premise_ids,
+                note=validation_note,
             ),
         )
 
