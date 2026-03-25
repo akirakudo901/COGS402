@@ -2,3 +2,4 @@
 .env
 /datasets
 /results
+/artifacts
