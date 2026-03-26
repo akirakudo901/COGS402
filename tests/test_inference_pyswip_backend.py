@@ -87,6 +87,184 @@ class InferenceBackendIntegrationShapeTests(unittest.TestCase):
                     Predicate(name="value", args=(Term.constant("5"),)),
                 )
 
+    def test_mathis_relation_linear_single_var_under_fallback(self):
+        """``X is 2*X+1`` as equality: X = -1 (not SWI ``is/2``)."""
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "fallback"}):
+            with mock.patch.object(inference, "_get_prolog_backend", side_effect=RuntimeError("missing")):
+                rule = Rule(
+                    head=Predicate(name="value", args=(Term.variable("X"),)),
+                    body=(
+                        Predicate(
+                            name="mathIs",
+                            args=(Term.variable("X"), Term.constant("2*X+1")),
+                        ),
+                    ),
+                )
+                premises = [Premise(id=1, clause=rule)]
+                clause = inference.infer_new_premise(premises)
+                self.assertIsInstance(clause, Fact)
+                assert isinstance(clause, Fact)
+                self.assertEqual(
+                    clause.predicate,
+                    Predicate(name="value", args=(Term.constant("-1"),)),
+                )
+
+    def test_mathis_constant_folds_before_eval_under_fallback(self):
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "fallback"}):
+            with mock.patch.object(inference, "_get_prolog_backend", side_effect=RuntimeError("missing")):
+                rule = Rule(
+                    head=Predicate(name="value", args=(Term.variable("Z"),)),
+                    body=(
+                        Predicate(
+                            name="mathIs",
+                            args=(Term.variable("Z"), Term.constant("2+3+4")),
+                        ),
+                    ),
+                )
+                premises = [Premise(id=1, clause=rule)]
+                clause = inference.infer_new_premise(premises)
+                self.assertIsInstance(clause, Fact)
+                assert isinstance(clause, Fact)
+                self.assertEqual(
+                    clause.predicate,
+                    Predicate(name="value", args=(Term.constant("9"),)),
+                )
+    
+    def test_mathis_constant_folds_before_eval_under_fallback_even_with_variable(self):
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "fallback"}):
+            with mock.patch.object(inference, "_get_prolog_backend", side_effect=RuntimeError("missing")):
+                rule = Rule(
+                    head=Predicate(name="value", args=(Term.variable("Z"),)),
+                    body=(
+                        Predicate(
+                            name="mathIs",
+                            args=(Term.variable("Z"), Term.constant("2+3+4+W")),
+                        ),
+                    ),
+                )
+                premises = [Premise(id=1, clause=rule)]
+                clause = inference.infer_new_premise(premises)
+                print(f"clause body: {clause.body!r}")
+                self.assertIsInstance(clause, Rule)
+                assert isinstance(clause, Rule)
+                self.assertEqual(
+                    clause.head,
+                    Predicate(name="value", args=(Term.variable("Z"),)),
+                )
+                self.assertEqual(
+                    clause.body,
+                    (
+                        Predicate(
+                            name="mathIs",
+                            args=(
+                                Term.variable("Z"),
+                                Predicate(
+                                    name="+",
+                                    args=(Term.constant("9"), Term.variable("W")),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+
+    def test_mathis_relation_solves_for_rhs_var_under_fallback(self):
+        """``10 is 2*X`` binds ``X`` (LHS constant, RHS has single variable)."""
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "fallback"}):
+            with mock.patch.object(inference, "_get_prolog_backend", side_effect=RuntimeError("missing")):
+                rule = Rule(
+                    head=Predicate(name="value", args=(Term.variable("X"),)),
+                    body=(
+                        Predicate(
+                            name="mathIs",
+                            args=(Term.constant("10"), Term.constant("2*X")),
+                        ),
+                    ),
+                )
+                premises = [Premise(id=1, clause=rule)]
+                clause = inference.infer_new_premise(premises)
+                self.assertIsInstance(clause, Fact)
+                assert isinstance(clause, Fact)
+                self.assertEqual(
+                    clause.predicate,
+                    Predicate(name="value", args=(Term.constant("5"),)),
+                )
+
+    def test_is_predicate_is_accepted_under_fallback(self):
+        """`is/2` should reduce like `mathIs/2` even when SWI backend is missing."""
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "fallback"}):
+            with mock.patch.object(inference, "_get_prolog_backend", side_effect=RuntimeError("missing")):
+                rule = Rule(
+                    head=Predicate(name="value", args=(Term.variable("Z"),)),
+                    body=(
+                        Predicate(
+                            name="is",
+                            args=(
+                                Term.variable("Z"),
+                                Predicate(
+                                    name="+",
+                                    args=(Term.constant("2"), Term.constant("3")),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                premises = [Premise(id=1, clause=rule)]
+                clause = inference.infer_new_premise(premises)
+                self.assertIsInstance(clause, Fact)
+                assert isinstance(clause, Fact)
+                self.assertEqual(
+                    clause.predicate,
+                    Predicate(name="value", args=(Term.constant("5"),)),
+                )
+
+    def test_mathis_nested_rhs_constant_folding_under_fallback_even_with_variable(self):
+        """RHS provided as nested operator Predicates should fold constants."""
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "fallback"}):
+            with mock.patch.object(inference, "_get_prolog_backend", side_effect=RuntimeError("missing")):
+                expr = Predicate(
+                    name="+",
+                    args=(
+                        Predicate(
+                            name="+",
+                            args=(
+                                Predicate(
+                                    name="+",
+                                    args=(Term.constant("2"), Term.constant("3")),
+                                ),
+                                Term.constant("4"),
+                            ),
+                        ),
+                        Term.variable("W"),
+                    ),
+                )
+                rule = Rule(
+                    head=Predicate(name="value", args=(Term.variable("Z"),)),
+                    body=(Predicate(name="mathIs", args=(Term.variable("Z"), expr)),),
+                )
+                premises = [Premise(id=1, clause=rule)]
+                clause = inference.infer_new_premise(premises)
+                self.assertIsInstance(clause, Rule)
+                assert isinstance(clause, Rule)
+                self.assertEqual(
+                    clause.head,
+                    Predicate(name="value", args=(Term.variable("Z"),)),
+                )
+                self.assertEqual(
+                    clause.body,
+                    (
+                        Predicate(
+                            name="mathIs",
+                            args=(
+                                Term.variable("Z"),
+                                Predicate(
+                                    name="+",
+                                    args=(Term.constant("9"), Term.variable("W")),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+
     def test_two_slots_pool_order_consumes_first_matching_producers(self):
         with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
             with mock.patch.object(inference, "_get_prolog_backend", return_value=_FakeBackend()):
