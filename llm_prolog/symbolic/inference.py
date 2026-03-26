@@ -14,7 +14,7 @@ import ast
 import os
 import re
 import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from .types import Clause, Fact, Predicate, Premise, Rule, Term, _parse_term, format_clause, parse_fact_or_rule
 
@@ -198,20 +198,22 @@ def apply_subst_predicate(pred: Predicate, subst: Substitution) -> Predicate:
         return arg
 
     # Special-case our internal arithmetic builtin.
-    if pred.name == "mathIs" and len(pred.args) == 2:
+    if pred.name in ["mathIs", "is"] and len(pred.args) == 2:
         lhs, rhs_expr = pred.args
         lhs = apply_subst_arg(lhs)
         rhs_expr = apply_subst_arg(rhs_expr)
 
-        # Rewrite RHS expression string by substituting known variables.
-        # TODO might be obsolete now that we can resursively define Predicate for
-        #      inner math expressions as well
-        if isinstance(rhs_expr, Term):
+        # Legacy RHS format: `mathIs/2` storing the RHS as a constant Term whose
+        # `name` is an infix expression string (e.g. `"2*X+1"`). Substitution
+        # doesn't rewrite inside that string, so we do a best-effort word-boundary
+        # replacement here; the reduction pass will then convert it into nested
+        # arithmetic Predicates.
+        if isinstance(rhs_expr, Term) and not rhs_expr.is_variable:
             expr = rhs_expr.name
             for var_name, bound_term in subst.items():
-                if not bound_term.is_variable:
-                    expr = re.sub(rf"\b{re.escape(var_name)}\b", bound_term.name, expr)
-        return Predicate(name="mathIs", args=(lhs, Term.constant(expr)))
+                expr = re.sub(rf"\b{re.escape(var_name)}\b", bound_term.name, expr)
+
+        return Predicate(name=pred.name, args=(lhs, Term.constant(expr)))
 
     new_args: List[Term | Predicate] = []
     for t in pred.args:
@@ -305,6 +307,13 @@ def _term_to_number(t: Term) -> Optional[float]:
     return None
 
 
+def _arith_normalize_source(expr: str) -> str:
+    expr = expr.strip()
+    expr = re.sub(r"\bmod\b", "%", expr)
+    expr = re.sub(r"\bdiv\b", "//", expr)
+    return expr
+
+
 def _safe_eval_arith(expr: str) -> Optional[float]:
     """
     Evaluate a restricted arithmetic expression.
@@ -319,9 +328,7 @@ def _safe_eval_arith(expr: str) -> Optional[float]:
     if not expr:
         return None
 
-    # Lightweight Prolog-ish normalization.
-    expr = re.sub(r"\bmod\b", "%", expr)
-    expr = re.sub(r"\bdiv\b", "//", expr)
+    expr = _arith_normalize_source(expr)
 
     try:
         node = ast.parse(expr, mode="eval")
@@ -364,12 +371,498 @@ def _safe_eval_arith(expr: str) -> Optional[float]:
     return eval_node(node)
 
 
+_MATHIS_POLY_EPS = 1e-9
+
+
+def _fold_constants_in_ast(node: ast.AST) -> ast.AST:
+    """
+    Fold arithmetic subexpressions that contain no variable names (ast.Name).
+    Reuses the same operator set as _safe_eval_arith.
+    """
+
+    def contains_name(n: ast.AST) -> bool:
+        if isinstance(n, ast.Name):
+            return True
+        if isinstance(n, ast.Expression):
+            return contains_name(n.body)
+        if isinstance(n, ast.UnaryOp):
+            return contains_name(n.operand)
+        if isinstance(n, ast.BinOp):
+            return contains_name(n.left) or contains_name(n.right)
+        if isinstance(n, ast.Constant):
+            return False
+        return True
+
+    def fold_inner(n: ast.AST) -> ast.AST:
+        if isinstance(n, ast.Expression):
+            inner = fold_inner(n.body)
+            return ast.Expression(body=inner)
+        if isinstance(n, ast.Name):
+            return n
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return n
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.UAdd, ast.USub)):
+            op = fold_inner(n.operand)
+            if isinstance(op, ast.Constant) and isinstance(op.value, (int, float)):
+                v = float(op.value)
+                v = v if isinstance(n.op, ast.UAdd) else -v
+                if float(v).is_integer():
+                    return ast.Constant(value=int(v))
+                return ast.Constant(value=v)
+            return ast.UnaryOp(op=n.op, operand=op)
+        if isinstance(n, ast.BinOp) and isinstance(
+            n.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+        ):
+            left = fold_inner(n.left)
+            right = fold_inner(n.right)
+            if (
+                isinstance(left, ast.Constant)
+                and isinstance(right, ast.Constant)
+                and isinstance(left.value, (int, float))
+                and isinstance(right.value, (int, float))
+            ):
+                a = float(left.value)
+                b = float(right.value)
+                if isinstance(n.op, ast.Add):
+                    out = a + b
+                elif isinstance(n.op, ast.Sub):
+                    out = a - b
+                elif isinstance(n.op, ast.Mult):
+                    out = a * b
+                elif isinstance(n.op, ast.Div):
+                    out = a / b
+                elif isinstance(n.op, ast.FloorDiv):
+                    out = a // b
+                elif isinstance(n.op, ast.Mod):
+                    out = a % b
+                elif isinstance(n.op, ast.Pow):
+                    out = a ** b
+                else:
+                    return ast.BinOp(left=left, op=n.op, right=right)
+                if float(out).is_integer():
+                    return ast.Constant(value=int(out))
+                return ast.Constant(value=float(out))
+            return ast.BinOp(left=left, op=n.op, right=right)
+        return n
+
+    folded = fold_inner(node)
+    if contains_name(folded):
+        return folded
+    to_unparse = folded.body if isinstance(folded, ast.Expression) else folded
+    v = _safe_eval_arith(ast.unparse(to_unparse))
+    if v is None:
+        return folded
+    if float(v).is_integer():
+        return ast.Constant(value=int(v))
+    return ast.Constant(value=float(v))
+
+
+def _substitute_bound_vars_in_arith_ast(node: ast.AST, subst: Substitution) -> ast.AST:
+    """Inline variables that are already bound to ground numeric constants."""
+
+    def walk(n: ast.AST) -> ast.AST:
+        if isinstance(n, ast.Expression):
+            inner = walk(n.body)
+            return ast.Expression(body=inner)
+        if isinstance(n, ast.Name):
+            t = subst.get(n.id)
+            if t is not None and not t.is_variable:
+                num = _term_to_number(t)
+                if num is not None:
+                    if float(num).is_integer():
+                        return ast.Constant(value=int(num))
+                    return ast.Constant(value=float(num))
+            return n
+        if isinstance(n, ast.Constant):
+            return n
+        if isinstance(n, ast.UnaryOp):
+            return ast.UnaryOp(op=n.op, operand=walk(n.operand))
+        if isinstance(n, ast.BinOp):
+            return ast.BinOp(left=walk(n.left), op=n.op, right=walk(n.right))
+        return n
+
+    return walk(node)
+
+
+def _poly_trim(coeffs: List[float]) -> List[float]:
+    out = list(coeffs)
+    while len(out) > 1 and abs(out[-1]) < _MATHIS_POLY_EPS:
+        out.pop()
+    return out
+
+
+def _poly_neg(coeffs: List[float]) -> List[float]:
+    return [-c for c in coeffs]
+
+
+def _poly_add(a: List[float], b: List[float]) -> List[float]:
+    m = max(len(a), len(b))
+    out = [(a[i] if i < len(a) else 0.0) + (b[i] if i < len(b) else 0.0) for i in range(m)]
+    return _poly_trim(out)
+
+
+def _poly_sub(a: List[float], b: List[float]) -> List[float]:
+    m = max(len(a), len(b))
+    out = [(a[i] if i < len(a) else 0.0) - (b[i] if i < len(b) else 0.0) for i in range(m)]
+    return _poly_trim(out)
+
+
+def _poly_mul(a: List[float], b: List[float]) -> List[float]:
+    out = [0.0] * (len(a) + len(b) - 1)
+    for i, ai in enumerate(a):
+        for j, bj in enumerate(b):
+            out[i + j] += ai * bj
+    return _poly_trim(out)
+
+
+def _poly_scalar_div(p: List[float], k: float) -> Optional[List[float]]:
+    if abs(k) < _MATHIS_POLY_EPS:
+        return None
+    return _poly_trim([c / k for c in p])
+
+
+def _poly_pow(base: List[float], exp: int) -> Optional[List[float]]:
+    if exp < 0:
+        return None
+    if exp == 0:
+        return [1.0]
+    acc = base
+    for _ in range(1, exp):
+        acc = _poly_mul(acc, base)
+    return acc
+
+
+def _ast_to_polynomial(var: str, n: ast.AST) -> Optional[List[float]]:
+    """
+    Map an AST expression to dense coefficients in ``var`` (lowest degree first),
+    or None if the expression is not a polynomial in ``var`` (e.g. multivariate).
+    """
+    if isinstance(n, ast.Expression):
+        return _ast_to_polynomial(var, n.body)
+    if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+        return [float(n.value)]
+    if isinstance(n, ast.Name):
+        if n.id == var:
+            return [0.0, 1.0]
+        return None
+    if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub):
+        inner = _ast_to_polynomial(var, n.operand)
+        return None if inner is None else _poly_neg(inner)
+    if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.UAdd):
+        return _ast_to_polynomial(var, n.operand)
+    if isinstance(n, ast.BinOp):
+        if isinstance(n.op, ast.Add):
+            pl = _ast_to_polynomial(var, n.left)
+            pr = _ast_to_polynomial(var, n.right)
+            if pl is None or pr is None:
+                return None
+            return _poly_add(pl, pr)
+        if isinstance(n.op, ast.Sub):
+            pl = _ast_to_polynomial(var, n.left)
+            pr = _ast_to_polynomial(var, n.right)
+            if pl is None or pr is None:
+                return None
+            return _poly_sub(pl, pr)
+        if isinstance(n.op, ast.Mult):
+            pl = _ast_to_polynomial(var, n.left)
+            pr = _ast_to_polynomial(var, n.right)
+            if pl is None or pr is None:
+                return None
+            return _poly_mul(pl, pr)
+        if isinstance(n.op, ast.Div):
+            pr = _ast_to_polynomial(var, n.right)
+            if pr is None or len(pr) != 1:
+                return None
+            pl = _ast_to_polynomial(var, n.left)
+            if pl is None:
+                return None
+            return _poly_scalar_div(pl, pr[0])
+        if isinstance(n.op, ast.Pow):
+            if not isinstance(n.right, ast.Constant) or not isinstance(n.right.value, (int, float)):
+                return None
+            exp = int(n.right.value)
+            if exp != float(n.right.value) or exp < 0:
+                return None
+            pl = _ast_to_polynomial(var, n.left)
+            if pl is None:
+                return None
+            return _poly_pow(pl, exp)
+    return None
+
+
+def _solve_polynomial_real_unique(coeffs: List[float]) -> Union[Literal["tautology"], Literal["none"], float]:
+    """
+    ``coeffs[k]`` is the coefficient of var^k. Solve sum_k coeffs[k] * var^k = 0.
+    Returns a single real root, 'tautology' if identically zero, or 'none'.
+    """
+    c = _poly_trim([float(x) for x in coeffs])
+    if not c:
+        return "tautology"
+    if len(c) == 1:
+        if abs(c[0]) < _MATHIS_POLY_EPS:
+            return "tautology"
+        return "none"
+    if len(c) == 2:
+        return -c[0] / c[1]
+
+    import numpy as np
+
+    high_first = c[::-1]
+    roots = np.roots(high_first)
+    reals: List[float] = []
+    for r in roots:
+        if abs(r.imag) < 1e-8:
+            reals.append(float(r.real))
+    if not reals:
+        return "none"
+    uniq: List[float] = []
+    for x in sorted(reals):
+        if not uniq or abs(x - uniq[-1]) > 1e-6:
+            uniq.append(x)
+    if len(uniq) != 1:
+        return "none"
+    return uniq[0]
+
+
+def _collect_prolog_var_names_from_ast(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+
+    def walk(n: ast.AST) -> None:
+        if isinstance(n, ast.Expression):
+            walk(n.body)
+            return
+        if isinstance(n, ast.Name):
+            if re.fullmatch(r"[A-Z][A-Za-z0-9_]*", n.id):
+                names.add(n.id)
+            return
+        if isinstance(n, ast.UnaryOp):
+            walk(n.operand)
+            return
+        if isinstance(n, ast.BinOp):
+            walk(n.left)
+            walk(n.right)
+            return
+
+    walk(node)
+    return names
+
+
+def _term_to_arith_ast(term: Term, subst: Substitution) -> Optional[ast.AST]:
+    if term.is_variable:
+        if term.name in subst:
+            return _term_to_arith_ast(subst[term.name], subst)
+        return ast.Name(id=term.name, ctx=ast.Load())
+    s = term.name.strip()
+    if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", s):
+        v = float(s)
+        if float(v).is_integer():
+            return ast.Constant(value=int(v))
+        return ast.Constant(value=v)
+    try:
+        node = ast.parse(_arith_normalize_source(s), mode="eval")
+    except SyntaxError:
+        return None
+    folded = _fold_constants_in_ast(node)
+    return folded if isinstance(folded, ast.Expression) else ast.Expression(body=folded)
+
+
+def _arith_expr_arg_to_py_source(expr: Term | Predicate) -> Optional[str]:
+    """
+    Convert a nested arithmetic expression (as Term or operator Predicates)
+    into a Python-infix string that `_safe_eval_arith` / `_try_fold_mathis_rhs`
+    can parse.
+    """
+    if isinstance(expr, Term):
+        if expr.is_variable:
+            return expr.name
+        s = expr.name.strip()
+        if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", s):
+            return s
+        # For legacy string expressions stored as constants, keep the raw text.
+        if any(ch in s for ch in "+-*/()%") or re.search(r"[A-Z][A-Za-z0-9_]*", s):
+            return s
+        # Otherwise treat it like an identifier.
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", s):
+            return s
+        return None
+
+    # Predicate operators (prefix functor form like '+(A,B)').
+    if len(expr.args) == 1 and expr.name in {"-", "neg"}:
+        inner = _arith_expr_arg_to_py_source(expr.args[0])
+        if inner is None:
+            return None
+        return f"(-{inner})"
+
+    op_map: Dict[str, str] = {
+        "+": "+",
+        "-": "-",
+        "*": "*",
+        "/": "/",
+        "//": "//",
+        "%": "%",
+        "**": "**",
+        "div": "//",
+        "mod": "%",
+    }
+    if expr.name in op_map:
+        if len(expr.args) != 2:
+            return None
+        l = _arith_expr_arg_to_py_source(expr.args[0])
+        r = _arith_expr_arg_to_py_source(expr.args[1])
+        if l is None or r is None:
+            return None
+        return f"({l}{op_map[expr.name]}{r})"
+
+    return None
+
+
+def _py_source_to_arith_expr_arg(expr: str) -> Optional[Term | Predicate]:
+    """
+    Convert a Python-style arithmetic source string into our nested arithmetic
+    representation (operator Predicates + Term variables/constants).
+    """
+    expr = expr.strip()
+    if not expr:
+        return None
+    try:
+        node = ast.parse(_arith_normalize_source(expr), mode="eval")
+    except SyntaxError:
+        return None
+
+    def conv(n: ast.AST) -> Optional[Term | Predicate]:
+        if isinstance(n, ast.Expression):
+            return conv(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            v = float(n.value)
+            if v.is_integer():
+                return Term.constant(str(int(v)))
+            return Term.constant(str(v))
+        if isinstance(n, ast.Name):
+            if re.fullmatch(r"[A-Z][A-Za-z0-9_]*", n.id):
+                return Term.variable(n.id)
+            return Term.constant(n.id)
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub):
+            inner = conv(n.operand)
+            if inner is None:
+                return None
+            return Predicate(name="-", args=(inner,))
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.UAdd):
+            return conv(n.operand)
+        if isinstance(n, ast.BinOp):
+            left = conv(n.left)
+            right = conv(n.right)
+            if left is None or right is None:
+                return None
+            if isinstance(n.op, ast.Add):
+                return Predicate(name="+", args=(left, right))
+            if isinstance(n.op, ast.Sub):
+                return Predicate(name="-", args=(left, right))
+            if isinstance(n.op, ast.Mult):
+                return Predicate(name="*", args=(left, right))
+            if isinstance(n.op, ast.Div):
+                return Predicate(name="/", args=(left, right))
+            if isinstance(n.op, ast.FloorDiv):
+                return Predicate(name="//", args=(left, right))
+            if isinstance(n.op, ast.Mod):
+                return Predicate(name="%", args=(left, right))
+            if isinstance(n.op, ast.Pow):
+                return Predicate(name="**", args=(left, right))
+            return None
+        return None
+
+    return conv(node)
+
+
+def _try_fold_mathis_rhs(expr: str) -> Optional[str]:
+    """
+    If purely arithmetic subexpressions can be evaluated, return a new RHS
+    string, else None.
+    """
+    try:
+        raw = ast.parse(_arith_normalize_source(expr), mode="eval")
+    except SyntaxError:
+        return None
+    raw_unparsed = ast.unparse(raw.body)
+    folded = _fold_constants_in_ast(raw)
+    fb = folded.body if isinstance(folded, ast.Expression) else folded
+    folded_unparsed = ast.unparse(fb)
+    if folded_unparsed != raw_unparsed:
+        return folded_unparsed
+    return None
+
+
+def _try_reduce_mathis_as_relation(
+    lhs: Term, rhs_expr: str, subst: Substitution
+) -> Tuple[Optional[Substitution], bool]:
+    """
+    Treat ``mathIs(LHS, RHS)`` as the relation LHS = RHS when SWI ``is/2``
+    semantics (evaluate RHS only) are too narrow.
+
+    Returns (extended_subst_or_None, drop_atom).
+    """
+    rhs_expr = rhs_expr.strip()
+    if not rhs_expr:
+        return None, False
+
+    try:
+        rhs_ast_full = ast.parse(_arith_normalize_source(rhs_expr), mode="eval")
+    except SyntaxError:
+        return None, False
+
+    rhs_ast = _fold_constants_in_ast(_substitute_bound_vars_in_arith_ast(rhs_ast_full, subst))
+    rhs_body = rhs_ast.body if isinstance(rhs_ast, ast.Expression) else rhs_ast
+
+    lhs_ast_full = _term_to_arith_ast(lhs, subst)
+    if lhs_ast_full is None:
+        return None, False
+    lhs_ast = lhs_ast_full.body if isinstance(lhs_ast_full, ast.Expression) else lhs_ast_full
+    lhs_ast = _fold_constants_in_ast(_substitute_bound_vars_in_arith_ast(lhs_ast, subst))
+    lhs_ast = lhs_ast.body if isinstance(lhs_ast, ast.Expression) else lhs_ast
+
+    diff = ast.BinOp(left=lhs_ast, op=ast.Sub(), right=rhs_body)
+    diff = _fold_constants_in_ast(ast.Expression(body=diff))
+    diff_body = diff.body if isinstance(diff, ast.Expression) else diff
+
+    free_names = _collect_prolog_var_names_from_ast(diff_body)
+
+    if not free_names:
+        vnum = _safe_eval_arith(ast.unparse(diff_body))
+        if vnum is None:
+            return None, False
+        if abs(float(vnum)) < _MATHIS_POLY_EPS:
+            return subst, True
+        return None, False
+
+    if len(free_names) != 1:
+        return None, False
+
+    (var_name,) = tuple(free_names)
+    poly = _ast_to_polynomial(var_name, diff_body)
+    if poly is None:
+        return None, False
+
+    sol = _solve_polynomial_real_unique(poly)
+    if sol == "none":
+        return None, False
+    if sol == "tautology":
+        return subst, True
+
+    if float(sol).is_integer():
+        val_term: Term = Term.constant(str(int(sol)))
+    else:
+        val_term = Term.constant(str(float(sol)))
+
+    extended = _py_unify_terms(Term.variable(var_name), val_term, dict(subst))
+    if extended is None:
+        return None, False
+    return extended, True
+
+
 def _reduce_mathis_in_rule(rule: Rule) -> Clause:
     """
-    Reduce any `mathIs/2` atoms in the body that have a ground RHS expression.
-
-    This emulates Prolog `is/2`: evaluate RHS, then unify LHS with the result.
-    On success, the `mathIs` atom is removed; on failure, no reduction occurs.
+    Simplify ``mathIs/2`` body atoms: Prolog-style ``is/2`` when the RHS is
+    ground, constant-folding on the RHS when possible, and otherwise relational
+    solving when the equality is a polynomial in a single Prolog variable.
     """
     current: Rule = rule
     subst: Substitution = {}
@@ -380,19 +873,49 @@ def _reduce_mathis_in_rule(rule: Rule) -> Clause:
         new_body: List[Predicate] = []
 
         for atom in current.body:
-            if atom.name != "mathIs" or len(atom.args) != 2:
+            if atom.name not in ["mathIs", "is"] or len(atom.args) != 2:
                 new_body.append(atom)
                 continue
 
             lhs, rhs_expr_term = atom.args
-            expr = rhs_expr_term.name
-
-            # Apply any known substitutions into the atom (including expression rewrite).
+            # Apply any known substitutions into the atom.
             atom = apply_subst_predicate(atom, subst)
             lhs, rhs_expr_term = atom.args
-            expr = rhs_expr_term.name
+
+            expr_arg: Term | Predicate = rhs_expr_term  # for typing clarity
+            # Deprecation handling: if RHS is the legacy "expression string as Term name"
+            # format, convert it to nested arithmetic Predicates now.
+            if isinstance(expr_arg, Term) and not expr_arg.is_variable:
+                converted = _py_source_to_arith_expr_arg(expr_arg.name)
+                if converted is not None:
+                    expr_arg = converted
+                    atom = Predicate(name=atom.name, args=(lhs, expr_arg))
+
+            expr = _arith_expr_arg_to_py_source(expr_arg)
+            if expr is None:
+                new_body.append(atom)
+                continue
+
+            folded = _try_fold_mathis_rhs(expr)
+            if folded is not None:
+                folded_arg = _py_source_to_arith_expr_arg(folded)
+                expr = folded
+                if folded_arg is not None:
+                    atom = Predicate(name=atom.name, args=(lhs, folded_arg))
+                changed = True
 
             if not _is_ground_arith_expr(expr):
+                # TODO STILL RESTRICTING LHS TO TERM DUE TO _try_reduce_mathis_as_relation's parameters
+                if not isinstance(lhs, Term):
+                    new_body.append(atom)
+                    continue
+                # TODO END
+                rel_subst, drop = _try_reduce_mathis_as_relation(lhs, expr, subst)
+                if drop:
+                    assert rel_subst is not None
+                    subst = rel_subst
+                    changed = True
+                    continue
                 new_body.append(atom)
                 continue
 
@@ -407,6 +930,9 @@ def _reduce_mathis_in_rule(rule: Rule) -> Clause:
             else:
                 value_term = Term.constant(str(value))
 
+            if not isinstance(lhs, Term):
+                new_body.append(atom)
+                continue
             extended = _py_unify_terms(lhs, value_term, subst)
             if extended is None:
                 # Prolog would fail this branch; we represent this as "no reduction".
@@ -438,9 +964,13 @@ def _predicate_to_prolog_goal_text(pred: Predicate) -> str:
     Internally we store arithmetic evaluation as `mathIs/2`; SWI executes it as
     the `is/2` operator.
     """
-    if pred.name == "mathIs" and len(pred.args) == 2:
+    if pred.name in ["mathIs", "is"] and len(pred.args) == 2:
         lhs, rhs = pred.args
-        return f"{lhs.to_prolog_text()} is {rhs.name.strip()}"
+        if isinstance(rhs, Term):
+            rhs_text = rhs.name.strip()
+        else:
+            rhs_text = rhs.to_prolog_text()
+        return f"{lhs.to_prolog_text()} is {rhs_text}"
     return pred.to_prolog_text()
 
 
