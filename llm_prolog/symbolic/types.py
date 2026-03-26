@@ -270,6 +270,74 @@ class SelectorDecision:
         return "\n".join(lines)
 
 
+def _failed_step_groups_in_order(steps: List["PipelineStep"]) -> Dict[str, List["PipelineStep"]]:
+    """Group failed steps by note, preserving first-seen note order."""
+    groups: Dict[str, List["PipelineStep"]] = {}
+    for s in steps:
+        if s.success:
+            continue
+        key = s.note if s.note is not None else ""
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(s)
+    return groups
+
+
+def _initial_premises_for_report(final_premises: List[Premise]) -> List[Premise]:
+    """Premises that are not pipeline-added (inference or selector background)."""
+    return sorted(
+        (
+            p
+            for p in final_premises
+            if (p.source or "") not in ("inference", "selector_background")
+        ),
+        key=lambda p: p.id,
+    )
+
+
+def _append_new_premises_report_lines(
+    lines: List[str],
+    *,
+    steps: List["PipelineStep"],
+    final_premises: List[Premise],
+) -> None:
+    """
+    Append New Premises section body: selector backgrounds (in step order), then
+    inference results per successful step, using monotonic id assignment like the pipeline.
+    """
+    initial = _initial_premises_for_report(final_premises)
+    cursor = max((p.id for p in initial), default=0)
+    id_by_final = {p.id: p for p in final_premises}
+
+    for step in sorted(steps, key=lambda s: s.step_index):
+        for _ in step.decision.background_premises:
+            cursor += 1
+            p = id_by_final.get(cursor)
+            if p is None:
+                continue
+            lines.append(
+                f"{p.id} (from selector proposal, step {step.step_index}):"
+            )
+            body = f"  {format_clause(p.clause)}"
+            if p.nl:
+                body += f" # {p.nl}"
+            lines.append(body)
+        if step.new_premise is not None:
+            np = step.new_premise
+            cursor = np.id
+            src = np.source or "inference"
+            compact_id_list = ",".join(str(i) for i in step.used_premise_ids)
+            prop = step.decision.proposed_new_premise
+            lines.append(
+                f"{np.id} (from {src}, [{compact_id_list}], "
+                f"step {step.step_index}, proposed='{prop}'): "
+            )
+            body = f"  {format_clause(np.clause)}"
+            if np.nl:
+                body += f" # {np.nl}"
+            lines.append(body)
+
+
 @dataclass
 class PipelineStep:
     step_index: int
@@ -293,20 +361,11 @@ class PipelineStep:
         return f"PipelineStep({inner})"
     
     def __str__(self) -> str:
-        lines = []
-        lines.append(f"Step {self.step_index} ({'succeeded' if self.success else 'failed'}):")
-        lines.append(f"."*20)
-        lines.append(f"{self.decision}")
-        lines.append(f"."*20)
-        if self.new_premise is not None:
-            lines.append(f"  Used premise IDs {self.used_premise_ids} to deduce the new premise:")
-            lines.append(f"    {self.new_premise}")
-        else:
-            lines.append(f"  Used premise IDs {self.used_premise_ids} to deduce NO new premise.")
-
-        if self.note is not None:
-            lines.append(f"  Note: {self.note}")
-        return "\n".join(lines)
+        compact_id_list = ",".join(str(i) for i in self.used_premise_ids)
+        return (
+            f"Step {self.step_index}: Combined=[{compact_id_list}], "
+            f"Proposed='{self.decision.proposed_new_premise}'."
+        )
 
 
 @dataclass
@@ -338,23 +397,37 @@ class PipelineResult:
         lines = [f"Pipeline {status}."]
         if self.reason:
             lines.append(f"Reason: {self.reason}")
-        
-        lines.append("Premises:")
-        lines.append(render_premises(self.final_premises))
 
-        if self.answer_premise:
-            lines.append(f"Answer premise: {self.answer_premise}")
+        lines.append("")
+        original = _initial_premises_for_report(self.final_premises)
+        lines.append("Original Premises:")
+        lines.append(render_premises(original, verbosity_level=1))
+
+        lines.append("")
+        lines.append("New Premises:")
+        _append_new_premises_report_lines(
+            lines,
+            steps=self.steps,
+            final_premises=self.final_premises,
+        )
+
+        lines.append("")
+        if self.answer_premise is not None:
+            lines.append("Answer premise: " + self.answer_premise.str_verbose(level=3))
         else:
             lines.append("Answer premise: None")
-
+        
         lines.append(f"Answer spec: {self.answer_spec}")
-
-        # Show obtained steps
-        lines.append("="*20)
-        lines.append("Pipeline steps:")
-        for s in self.steps:
-            lines.append("-"*20)
-            lines.append(f"{s}")
+        lines.append("")
+        lines.append("Failed step:")
+        groups = list(_failed_step_groups_in_order(self.steps).items())
+        if not groups:
+            lines.append("  None")
+        else:
+            for gi, (note, group_steps) in enumerate(groups):
+                lines.append(f"- {note}")
+                for s in sorted(group_steps, key=lambda x: x.step_index):
+                    lines.append(str(s))
         return "\n".join(lines)
 
     def extract_answer_constant(self) -> Optional[str]:
@@ -701,3 +774,179 @@ def render_premises(premises: List[Premise], verbosity_level : int=1) -> str:
     for p in sorted_premises:
         lines.append(p.str_verbose(level=verbosity_level))
     return "\n".join(lines)
+
+
+def _demo_pipeline_results() -> Tuple["PipelineResult", "PipelineResult"]:
+    """
+    Minimal PipelineResult pair exercising all __str__ sections (success vs failure).
+    Run: python -m llm_prolog.symbolic.types
+    """
+    # --- Success: step 0 adds two background premises, then inference ---
+    p1 = Premise(
+        id=1,
+        clause=Fact(predicate=Predicate("collected_cans", (Term.constant("144"),))),
+        nl="Collected 144 cans.",
+        source="nl_to_symbol",
+    )
+    p2 = Premise(
+        id=2,
+        clause=parse_fact_or_rule("reward(Count, R) :- mathIs(R, count * 2)."),
+        nl="Reward rule.",
+        source="nl_to_symbol",
+    )
+    p3 = Premise(
+        id=3,
+        clause=parse_fact_or_rule("bonus_one."),
+        nl=None,
+        source="selector_background",
+    )
+    p4 = Premise(
+        id=4,
+        clause=parse_fact_or_rule("bonus_two."),
+        nl=None,
+        source="selector_background",
+    )
+    p5 = Premise(
+        id=5,
+        clause=Fact(predicate=Predicate("reward", (Term.constant("144"), Term.constant("288")))),
+        nl="Reward for 144 cans.",
+        source="inference",
+        parent_ids=[1, 2],
+    )
+    dec0 = SelectorDecision(
+        selected_premise_ids=[1, 2],
+        proposed_new_premise="reward(144, R)",
+        background_premises=["bonus_one.", "bonus_two."],
+        is_answer_goal=True,
+        should_stop=False,
+    )
+    step0 = PipelineStep(
+        step_index=0,
+        used_premise_ids=[1, 2],
+        new_premise=p5,
+        decision=dec0,
+        success=True,
+        note=None,
+    )
+    answer_spec = AnswerSpec(target=parse_predicate("reward(144, R)"))
+    success_result = PipelineResult(
+        success=True,
+        answer_premise=p5,
+        steps=[step0],
+        answer_spec=answer_spec,
+        final_premises=[p1, p2, p3, p4, p5],
+        reason="answer_head_matched",
+    )
+
+    # --- Failure: step 0 adds two backgrounds then skips inference; later failures ---
+    q1 = Premise(
+        id=1,
+        clause=Fact(predicate=Predicate("fact_a", ())),
+        nl="A.",
+        source="nl_to_symbol",
+    )
+    q2 = Premise(
+        id=2,
+        clause=Fact(predicate=Predicate("fact_b", ())),
+        nl="B.",
+        source="nl_to_symbol",
+    )
+    q3 = Premise(
+        id=3,
+        clause=parse_fact_or_rule("bonus_one."),
+        nl=None,
+        source="selector_background",
+    )
+    q4 = Premise(
+        id=4,
+        clause=parse_fact_or_rule("bonus_two."),
+        nl=None,
+        source="selector_background",
+    )
+    q5 = Premise(
+        id=5,
+        clause=Fact(predicate=Predicate("merged", ())),
+        nl="Merged.",
+        source="inference",
+        parent_ids=[1, 2],
+    )
+    d_bg = SelectorDecision(
+        selected_premise_ids=[1],
+        proposed_new_premise=None,
+        background_premises=["bonus_one.", "bonus_two."],
+        is_answer_goal=False,
+        should_stop=False,
+    )
+    s_bg = PipelineStep(
+        step_index=0,
+        used_premise_ids=[1],
+        new_premise=None,
+        decision=d_bg,
+        success=False,
+        note="Selector did not choose two premises; skipping inference.",
+    )
+    d_ok = SelectorDecision(
+        selected_premise_ids=[1, 2],
+        proposed_new_premise="merged",
+        background_premises=[],
+        is_answer_goal=False,
+        should_stop=False,
+    )
+    s_ok = PipelineStep(
+        step_index=1,
+        used_premise_ids=[1, 2],
+        new_premise=q5,
+        decision=d_ok,
+        success=True,
+        note=None,
+    )
+    note_reuse = "Inference step failed due to selecting premises already combined previously."
+    d_fail = SelectorDecision(
+        selected_premise_ids=[1, 2],
+        proposed_new_premise="merged",
+        background_premises=[],
+        is_answer_goal=False,
+        should_stop=False,
+    )
+    s_fail1 = PipelineStep(
+        step_index=2,
+        used_premise_ids=[1, 2],
+        new_premise=None,
+        decision=d_fail,
+        success=False,
+        note=note_reuse,
+    )
+    note_infer = "Inference failed to derive a new clause from selected premises."
+    d_fail2 = SelectorDecision(
+        selected_premise_ids=[2, 5],
+        proposed_new_premise="nope(x)",
+        background_premises=[],
+        is_answer_goal=False,
+        should_stop=False,
+    )
+    s_fail2 = PipelineStep(
+        step_index=3,
+        used_premise_ids=[2, 5],
+        new_premise=None,
+        decision=d_fail2,
+        success=False,
+        note=note_infer,
+    )
+    fail_spec = AnswerSpec(target=parse_predicate("answer(X)"))
+    fail_result = PipelineResult(
+        success=False,
+        answer_premise=None,
+        steps=[s_bg, s_ok, s_fail1, s_fail2],
+        answer_spec=fail_spec,
+        final_premises=[q1, q2, q3, q4, q5],
+        reason="max_steps_exhausted",
+    )
+    return success_result, fail_result
+
+
+if __name__ == "__main__":
+    ok, bad = _demo_pipeline_results()
+    print("=== demo success ===")
+    print(ok)
+    print("=== demo failure ===")
+    print(bad)
