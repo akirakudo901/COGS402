@@ -304,6 +304,7 @@ def _initial_premises_for_report(final_premises: List[Premise]) -> List[Premise]
                 "inference",
                 "selector_background",
                 "termination_checker",
+                "final_termination_check",
                 "termination_checker_inference",
             )
         ),

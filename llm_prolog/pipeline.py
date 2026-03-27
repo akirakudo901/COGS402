@@ -20,7 +20,7 @@ from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
 from .cot_baseline import run_cot_baseline, run_cot_baseline_async
 from .nl_symbol_converter import convert_problem_to_symbols, convert_problem_to_symbols_async
-from .selector import select_next_step, select_next_step_async
+from .selector import check_termination, check_termination_async, select_next_step, select_next_step_async
 from .symbolic.inference import infer_new_premise, unify_predicates, validate_inference_premise_selection
 from .symbolic.types import (
     AnswerSpec,
@@ -38,6 +38,7 @@ class PipelineConfig:
     max_steps: int = 10
     explain: bool = True
     use_termination_checks: bool = False
+    use_final_termination_check: bool = True
 
 
 @dataclass
@@ -523,6 +524,41 @@ def _run_symbolic_steps(
     return success, final_answer, steps, reason
 
 
+def _try_final_termination_check_sync(
+    *,
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    llm: LLMClient,
+    model: str | None,
+    temperature: float | None,
+    max_tokens: int | None,
+    system_prompt_override: str | None,
+) -> tuple[bool, Optional[Premise], Optional[Premise], Optional[str], Optional[int]]:
+    """
+    Separate termination-check LLM call used only after max-steps exhaustion.
+    """
+    decision = check_termination(
+        problem=problem,
+        premises=premises,
+        answer_spec=answer_spec,
+        recent_premise=None,
+        llm=llm,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        system_prompt_override=system_prompt_override,
+    )
+    should_stop, inferred_answer, proposed_rule, reason = _handle_termination_decision_common(
+        premises=premises,
+        decision=decision,
+        answer_spec=answer_spec,
+        rule_source="final_termination_check",
+    )
+    solution_id = decision.solution_premise_id if should_stop else None
+    return should_stop, inferred_answer, proposed_rule, reason, solution_id
+
+
 async def _run_symbolic_steps_async(
     problem: str,
     pipeline_cfg: PipelineConfig,
@@ -617,6 +653,41 @@ async def _run_symbolic_steps_async(
     return success, final_answer, steps, reason
 
 
+async def _try_final_termination_check_async(
+    *,
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    llm_exec: LLMExecutor,
+    model: str | None,
+    temperature: float | None,
+    max_tokens: int | None,
+    system_prompt_override: str | None,
+) -> tuple[bool, Optional[Premise], Optional[Premise], Optional[str], Optional[int]]:
+    """
+    Async separate termination-check LLM call used only after max-steps exhaustion.
+    """
+    decision = await check_termination_async(
+        problem=problem,
+        premises=premises,
+        answer_spec=answer_spec,
+        recent_premise=None,
+        llm_exec=llm_exec,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        system_prompt_override=system_prompt_override,
+    )
+    should_stop, inferred_answer, proposed_rule, reason = _handle_termination_decision_common(
+        premises=premises,
+        decision=decision,
+        answer_spec=answer_spec,
+        rule_source="final_termination_check",
+    )
+    solution_id = decision.solution_premise_id if should_stop else None
+    return should_stop, inferred_answer, proposed_rule, reason, solution_id
+
+
 def run_symbolic_hybrid_pipeline(
     problem: str,
     *,
@@ -658,6 +729,50 @@ def run_symbolic_hybrid_pipeline(
         max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
         system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
     )
+
+    if (
+        not success
+        and reason is None
+        and pipeline_cfg.use_final_termination_check
+    ):
+        final_chk_ok, final_chk_answer, final_chk_rule, final_chk_reason, final_chk_solution_id = (
+            _try_final_termination_check_sync(
+                problem=problem,
+                premises=premises,
+                answer_spec=answer_spec,
+                llm=llm,
+                model=getattr(sel_spec, "model", None) if sel_spec else None,
+                temperature=getattr(sel_spec, "temperature", None) if sel_spec else None,
+                max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
+                system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
+            )
+        )
+        if final_chk_ok and final_chk_answer is not None and final_chk_rule is not None:
+            step_decision = SelectorDecision(
+                selected_premise_ids=[],
+                proposed_new_premise=None,
+                background_premises=[],
+                is_answer_goal=False,
+                is_final_solution=False,
+                solution_premise_id=None,
+                answer_link_rule=None,
+                should_stop=False,
+                stop_reason=None,
+            )
+            used_ids = [final_chk_solution_id] if final_chk_solution_id is not None else []
+            steps.append(
+                PipelineStep(
+                    step_index=len(steps),
+                    used_premise_ids=used_ids,
+                    new_premise=final_chk_rule,
+                    decision=step_decision,
+                    success=True,
+                    note=None,
+                )
+            )
+            success = True
+            final_answer = final_chk_answer
+            reason = final_chk_reason
 
     if not success and reason is None:
         reason = "max_steps_exhausted"
@@ -721,6 +836,50 @@ async def run_symbolic_hybrid_pipeline_async(
         max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
         system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
     )
+
+    if (
+        not success
+        and reason is None
+        and pipeline_cfg.use_final_termination_check
+    ):
+        final_chk_ok, final_chk_answer, final_chk_rule, final_chk_reason, final_chk_solution_id = (
+            await _try_final_termination_check_async(
+                problem=problem,
+                premises=premises,
+                answer_spec=answer_spec,
+                llm_exec=llm_exec,
+                model=getattr(sel_spec, "model", None) if sel_spec else None,
+                temperature=getattr(sel_spec, "temperature", None) if sel_spec else None,
+                max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
+                system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
+            )
+        )
+        if final_chk_ok and final_chk_answer is not None and final_chk_rule is not None:
+            step_decision = SelectorDecision(
+                selected_premise_ids=[],
+                proposed_new_premise=None,
+                background_premises=[],
+                is_answer_goal=False,
+                is_final_solution=False,
+                solution_premise_id=None,
+                answer_link_rule=None,
+                should_stop=False,
+                stop_reason=None,
+            )
+            used_ids = [final_chk_solution_id] if final_chk_solution_id is not None else []
+            steps.append(
+                PipelineStep(
+                    step_index=len(steps),
+                    used_premise_ids=used_ids,
+                    new_premise=final_chk_rule,
+                    decision=step_decision,
+                    success=True,
+                    note=None,
+                )
+            )
+            success = True
+            final_answer = final_chk_answer
+            reason = final_chk_reason
 
     if not success and reason is None:
         reason = "max_steps_exhausted"
