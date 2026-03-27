@@ -116,7 +116,12 @@ multi_suite2 = [
 spec = ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None)
 
 mode = PipelineMode.SYMBOLIC_HYBRID
-pipeline_cfg = PipelineConfig(max_steps=10, explain=True)
+pipeline_cfg = PipelineConfig(
+    max_steps=20, 
+    explain=True, 
+    use_termination_checks=False, 
+    use_final_termination_check=True
+    )
 
 fail_derive_ids = [3, 9, 10, 14, 17, 23, 28, 33, 39, 40, 48, 49]
 combined_already_ids = [3, 9, 10, 14, 17, 23, 24, 28, 33, 35, 39, 40, 44, 48, 49]
