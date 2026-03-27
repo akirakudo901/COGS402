@@ -29,6 +29,67 @@ Substitution = Dict[str, Term]
 _PROLOG_VAR_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 
 
+def _ordered_unique_var_names_from_predicate(pred: Predicate) -> List[str]:
+    """Left-to-right preorder over args; each logical name appears once, first wins."""
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for arg in pred.args:
+        for name in _collect_variable_names_from_arg(arg):
+            if name not in seen:
+                seen.add(name)
+                ordered.append(name)
+    return ordered
+
+
+def _rewrite_placeholder_var_var_bindings(
+    resolved: Substitution,
+    a: Predicate,
+    b: Predicate,
+) -> Substitution:
+    """
+    Rewrite SWI-Prolog placeholder variable bindings for var-var matches.
+
+    For each placeholder _G, the *master* is the first variable name in ``b``
+    (left-to-right argument order, first occurrence) that maps to _G. Every
+    other variable from ``a`` or ``b`` that maps to the same placeholder is
+    bound to ``Term.variable(master)``; the master has no entry in the
+    substitution.
+    """
+    a_vars = { name for arg in a.args
+               for name in _collect_variable_names_from_arg(arg) }
+    b_vars = { name for arg in b.args
+               for name in _collect_variable_names_from_arg(arg) }
+    if not a_vars or not b_vars:
+        return resolved
+
+    a_var_order = _ordered_unique_var_names_from_predicate(a)
+
+    placeholder_to_var_names: Dict[str, set[str]] = {}
+    for var_name, term in resolved.items():
+        if not term.is_variable or not term.name.startswith("_"):
+            continue
+        if var_name not in a_vars and var_name not in b_vars:
+            continue
+        placeholder_to_var_names.setdefault(term.name, set()).add(var_name)
+
+    rewritten = dict(resolved)
+    for _placeholder, var_names in placeholder_to_var_names.items():
+        master: Optional[str] = None
+        for v in a_var_order:
+            if v in var_names:
+                master = v
+                break
+        if master is None:
+            continue
+        for v in var_names:
+            if v == master:
+                continue
+            rewritten[v] = Term.variable(master)
+        rewritten.pop(master, None)
+
+    return rewritten
+
+
 def _inference_policy() -> str:
     """
     Backend policy:
@@ -86,7 +147,7 @@ class _PrologBackend:
             term = _value_to_term(value)
             if term is not None:
                 resolved[str(var_name)] = term
-        return resolved
+        return _rewrite_placeholder_var_var_bindings(resolved, a, b)
 
 
 _PROLOG_BACKEND: Optional[_PrologBackend] = None
@@ -1024,14 +1085,8 @@ def _reduce_rule_via_prolog_truth_and_constants(rule: Rule) -> Clause:
                 for arg in atom.args
                 for name in _collect_variable_names_from_arg(arg)
             ))
-
-            goals = [
-                f"{var_name} = {bound_term.to_prolog_text()}"
-                for var_name, bound_term in subst.items()
-            ]
-            goals.append(_predicate_to_prolog_goal_text(atom))
-            query = ", ".join(goals)
-
+            query = _predicate_to_prolog_goal_text(atom)
+            
             try:
                 with backend._lock:
                     solutions = list(backend._prolog.query(query, maxresult=1))
@@ -1215,9 +1270,7 @@ def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
     any_reduction = False
     current: Clause = consumer
     cur, reduced_open = _global_simplify_clause(current)
-    # TODO REMOVE DEBUG
-    print(f"{'' if reduced_open else "Not"} reduced: {cur}")
-    # TODO REMOVE DEBUG END
+
     if reduced_open:
         any_reduction = True
     current = cur
@@ -1237,19 +1290,13 @@ def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
         if len(slots[i]) != 1:
             continue
         atom = slots[i][0]
-        # TODO REMOVE DEBUG
-        print("0"*30)
-        print(f"atom {i}: {atom}")
-        # TODO REMOVE DEBUG END
+        
         for pool_idx, prod in enumerate(pool):
             # Handle fact slotting
             if isinstance(prod, Fact):
                 subst = unify_predicates(atom, prod.predicate)
                 if subst is None:
                     continue
-                # TODO REMOVE DEBUG
-                print(f"Fact {prod} slotted to atom {i}: {atom}")
-                # TODO REMOVE DEBUG END
                 slots[i] = []
             # Handle rule slotting
             else:
@@ -1261,42 +1308,17 @@ def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
                 if subst is None:
                     continue
                 slots[i] = [apply_subst_predicate(p, subst) for p in prod_f.body]
-                # TODO REMOVE DEBUG
-                print("*"*10)
-                print(f"Rule {prod_f} slotted to atom {i}: {atom}")
-                print(f"Slot now of form: {slots[i]}")
-                # TODO REMOVE DEBUG END
             # Apply substitution to head & other slots
-            # TODO REMOVE DEBUG
-            print("-"*20)
-            print(f"Pre-substitution head: {head}")
-            for j in range(n):
-                print(f"- Slot {j}: {slots[j]}")
-            # TODO REMOVE DEBUG END
             head = apply_subst_predicate(head, subst)
             for j in range(n):
                 slots[j] = [apply_subst_predicate(p, subst) for p in slots[j]]
-            # TODO REMOVE DEBUG
-            print(f"Substitution: {subst}")
-            print(f"Post-substitution head: {head}")
-            for j in range(n):
-                print(f"- Slot {j}: {slots[j]}")
-            print("-"*20)
-            # TODO REMOVE DEBUG END
             # Remove applied object from pool_idx
             pool.pop(pool_idx)
             slot_applied = True
             break
 
     out = _slots_to_clause(head, slots)
-    # TODO REMOVE DEBUG
-    print("-"*20)
-    print(f"Clause from slots: {out}")
-    # TODO REMOVE DEBUG END
     cur_end, reduced_end = _global_simplify_clause(out)
-    # TODO REMOVE DEBUG
-    print(f"{'' if reduced_open else "Not"} reduced at ene: {cur_end}")
-    # TODO REMOVE DEBUG END
     if reduced_end:
         any_reduction = True
     out = cur_end

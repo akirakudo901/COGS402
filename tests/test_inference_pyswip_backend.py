@@ -6,9 +6,55 @@ from llm_prolog.symbolic import inference
 from llm_prolog.symbolic.types import Fact, Predicate, Premise, Rule, Term
 
 
-class _FakeBackend:
-    def unify_predicates(self, a, b, subst=None):
-        return inference._py_unify_predicates(a, b, subst)
+
+class PlaceholderRewriteTests(unittest.TestCase):
+    def test_prefers_b_to_a_variable_mapping_for_shared_placeholder(self):
+        a = Predicate(name="pred", args=(Term.variable("A"),))
+        b = Predicate(name="pred", args=(Term.variable("B"),))
+        resolved = {
+            "A": Term.variable("_1342"),
+            "B": Term.variable("_1342"),
+        }
+
+        rewritten = inference._rewrite_placeholder_var_var_bindings(resolved, a, b)
+
+        self.assertEqual(rewritten["B"], Term.variable("A"))
+        self.assertNotIn("A", rewritten)
+
+    def test_keeps_non_placeholder_variable_bindings(self):
+        a = Predicate(name="pred", args=(Term.variable("A"),))
+        b = Predicate(name="pred", args=(Term.variable("B"),))
+        resolved = {
+            "A": Term.variable("X"),
+            "B": Term.variable("X"),
+        }
+
+        rewritten = inference._rewrite_placeholder_var_var_bindings(resolved, a, b)
+
+        self.assertEqual(rewritten, resolved)
+
+    def test_many_vars_share_placeholder_master_is_first_from_a_order(self):
+        a = Predicate(
+            name="pred",
+            args=(Term.variable("A1"), Term.variable("A2")),
+        )
+        b = Predicate(
+            name="pred",
+            args=(Term.variable("B1"), Term.variable("B2")),
+        )
+        resolved = {
+            "A1": Term.variable("_p"),
+            "A2": Term.variable("_p"),
+            "B1": Term.variable("_p"),
+            "B2": Term.variable("_p"),
+        }
+
+        rewritten = inference._rewrite_placeholder_var_var_bindings(resolved, a, b)
+
+        self.assertEqual(rewritten["B1"], Term.variable("A1"))
+        self.assertEqual(rewritten["B2"], Term.variable("A1"))
+        self.assertEqual(rewritten["A2"], Term.variable("A1"))
+        self.assertNotIn("A1", rewritten)
 
 
 class InferenceBackendPolicyTests(unittest.TestCase):
@@ -42,34 +88,32 @@ class InferenceBackendIntegrationShapeTests(unittest.TestCase):
 
     def test_unify_predicates_returns_expected_substitution_shape(self):
         with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
-            with mock.patch.object(inference, "_get_prolog_backend", return_value=_FakeBackend()):
-                a = Predicate(name="likes", args=(Term.variable("X"), Term.constant("music")))
-                b = Predicate(name="likes", args=(Term.constant("alice"), Term.variable("Y")))
-                subst = inference.unify_predicates(a, b)
-                self.assertIsNotNone(subst)
-                assert subst is not None
-                self.assertIn("X", subst)
-                self.assertEqual(subst["X"], Term.constant("alice"))
+            a = Predicate(name="likes", args=(Term.variable("X"), Term.constant("music")))
+            b = Predicate(name="likes", args=(Term.constant("alice"), Term.variable("Y")))
+            subst = inference.unify_predicates(a, b)
+            self.assertIsNotNone(subst)
+            assert subst is not None
+            self.assertIn("X", subst)
+            self.assertEqual(subst["X"], Term.constant("alice"))
 
     def test_infer_new_premise_reduces_rule_fact_with_backend_unifier(self):
         with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
-            with mock.patch.object(inference, "_get_prolog_backend", return_value=_FakeBackend()):
-                rule = Rule(
-                    head=Predicate(name="flightless", args=(Term.variable("B"),)),
-                    body=(Predicate(name="bird", args=(Term.variable("B"),)),),
-                )
-                fact = Fact(predicate=Predicate(name="bird", args=(Term.constant("penguin"),)))
-                premises = [
-                    Premise(id=1, clause=rule),
-                    Premise(id=2, clause=fact),
-                ]
-                clause = inference.infer_new_premise(premises)
-                self.assertIsInstance(clause, Fact)
-                assert isinstance(clause, Fact)
-                self.assertEqual(
-                    clause.predicate,
-                    Predicate(name="flightless", args=(Term.constant("penguin"),)),
-                )
+            rule = Rule(
+                head=Predicate(name="flightless", args=(Term.variable("B"),)),
+                body=(Predicate(name="bird", args=(Term.variable("B"),)),),
+            )
+            fact = Fact(predicate=Predicate(name="bird", args=(Term.constant("penguin"),)))
+            premises = [
+                Premise(id=1, clause=rule),
+                Premise(id=2, clause=fact),
+            ]
+            clause = inference.infer_new_premise(premises)
+            self.assertIsInstance(clause, Fact)
+            assert isinstance(clause, Fact)
+            self.assertEqual(
+                clause.predicate,
+                Predicate(name="flightless", args=(Term.constant("penguin"),)),
+            )
 
     def test_mathis_semantics_still_reduce_under_fallback(self):
         with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "fallback"}):
@@ -267,45 +311,83 @@ class InferenceBackendIntegrationShapeTests(unittest.TestCase):
 
     def test_two_slots_pool_order_consumes_first_matching_producers(self):
         with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
-            with mock.patch.object(inference, "_get_prolog_backend", return_value=_FakeBackend()):
-                consumer = Rule(
-                    head=Predicate(name="goal", args=()),
-                    body=(
-                        Predicate(name="p", args=(Term.constant("a"),)),
-                        Predicate(name="p", args=(Term.constant("b"),)),
-                    ),
-                )
-                fc = Fact(predicate=Predicate(name="p", args=(Term.constant("c"),)))
-                fa = Fact(predicate=Predicate(name="p", args=(Term.constant("a"),)))
-                fb = Fact(predicate=Predicate(name="p", args=(Term.constant("b"),)))
-                premises = [
-                    Premise(id=1, clause=consumer),
-                    Premise(id=2, clause=fc),
-                    Premise(id=3, clause=fa),
-                    Premise(id=4, clause=fb),
-                ]
-                clause = inference.infer_new_premise(premises)
-                self.assertIsInstance(clause, Fact)
-                assert isinstance(clause, Fact)
-                self.assertEqual(clause.predicate, Predicate(name="goal", args=()))
+            consumer = Rule(
+                head=Predicate(name="goal", args=()),
+                body=(
+                    Predicate(name="p", args=(Term.constant("a"),)),
+                    Predicate(name="p", args=(Term.constant("b"),)),
+                ),
+            )
+            fc = Fact(predicate=Predicate(name="p", args=(Term.constant("c"),)))
+            fa = Fact(predicate=Predicate(name="p", args=(Term.constant("a"),)))
+            fb = Fact(predicate=Predicate(name="p", args=(Term.constant("b"),)))
+            premises = [
+                Premise(id=1, clause=consumer),
+                Premise(id=2, clause=fc),
+                Premise(id=3, clause=fa),
+                Premise(id=4, clause=fb),
+            ]
+            clause = inference.infer_new_premise(premises)
+            self.assertIsInstance(clause, Fact)
+            assert isinstance(clause, Fact)
+            self.assertEqual(clause.predicate, Predicate(name="goal", args=()))
 
     def test_rule_producer_splices_body_at_slot(self):
         with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
-            with mock.patch.object(inference, "_get_prolog_backend", return_value=_FakeBackend()):
-                consumer = Rule(
-                    head=Predicate(name="h", args=(Term.variable("B"),)),
-                    body=(Predicate(name="bird", args=(Term.variable("B"),)),),
-                )
-                prod = Rule(
-                    head=Predicate(name="bird", args=(Term.variable("X"),)),
-                    body=(Predicate(name="penguin", args=(Term.variable("X"),)),),
-                )
-                premises = [Premise(id=1, clause=consumer), Premise(id=2, clause=prod)]
-                clause = inference.infer_new_premise(premises)
-                self.assertIsInstance(clause, Rule)
-                assert isinstance(clause, Rule)
-                self.assertEqual(len(clause.body), 1)
-                self.assertEqual(clause.body[0].name, "penguin")
+            consumer = Rule(
+                head=Predicate(name="h", args=(Term.variable("B"),)),
+                body=(Predicate(name="bird", args=(Term.variable("B"),)),),
+            )
+            prod = Rule(
+                head=Predicate(name="bird", args=(Term.variable("X"),)),
+                body=(Predicate(name="penguin", args=(Term.variable("X"),)),),
+            )
+            premises = [Premise(id=1, clause=consumer), Premise(id=2, clause=prod)]
+            clause = inference.infer_new_premise(premises)
+            self.assertIsInstance(clause, Rule)
+            assert isinstance(clause, Rule)
+            self.assertEqual(len(clause.body), 1)
+            self.assertEqual(clause.body[0].name, "penguin")
+
+    def test_infer_new_premise_preserves_head_variable_name_under_prolog_unify(self):
+        with mock.patch.dict(os.environ, {"LLM_PROLOG_INFERENCE_POLICY": "strict"}):
+            from llm_prolog.symbolic.types import parse_fact_or_rule
+
+            p2 = Premise(
+                id=2, nl="", parent_ids=[],
+                clause=parse_fact_or_rule("total_cans(30)."),
+            )
+            p4 = Premise(
+                id=4, nl="", parent_ids=[],
+                clause=parse_fact_or_rule(
+                    "paid_cans(Total, Paid) :- offer(buy_1_get_1_free), is(Paid, Total // 2)."
+                ),
+            )
+            p5 = Premise(
+                id=5, nl="", parent_ids=[],
+                clause=parse_fact_or_rule(
+                    "total_cost(Paid, Cost) :- normal_price(Price), is(Cost, Paid * Price)."
+                ),
+            )
+            p6 = Premise(
+                id=6, nl="", parent_ids=[],
+                clause=parse_fact_or_rule(
+                    "answer(Cost) :- total_cans(Total), paid_cans(Total, Paid), total_cost(Paid, Cost)."
+                ),
+            )
+
+            clause = inference.infer_new_premise([p6, p2, p4, p5])
+            self.assertIsInstance(clause, Rule)
+            assert isinstance(clause, Rule)
+            expected = parse_fact_or_rule(
+                "answer(Cost) :- offer(buy_1_get_1_free), normal_price(Fresh2), is(Cost, *(15, Fresh2))."
+            )
+            # Check head predicate
+            self.assertEqual(clause.head, expected.head)
+            # Check body contents: length and predicates
+            self.assertEqual(len(clause.body), len(expected.body))
+            for actual_atom, expected_atom in zip(clause.body, expected.body):
+                self.assertEqual(actual_atom, expected_atom)
 
     def test_infer_new_premise_requires_consumer_rule_when_multiple_premises(self):
         premises = [
