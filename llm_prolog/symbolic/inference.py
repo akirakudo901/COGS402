@@ -29,6 +29,67 @@ Substitution = Dict[str, Term]
 _PROLOG_VAR_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 
 
+def _ordered_unique_var_names_from_predicate(pred: Predicate) -> List[str]:
+    """Left-to-right preorder over args; each logical name appears once, first wins."""
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for arg in pred.args:
+        for name in _collect_variable_names_from_arg(arg):
+            if name not in seen:
+                seen.add(name)
+                ordered.append(name)
+    return ordered
+
+
+def _rewrite_placeholder_var_var_bindings(
+    resolved: Substitution,
+    a: Predicate,
+    b: Predicate,
+) -> Substitution:
+    """
+    Rewrite SWI-Prolog placeholder variable bindings for var-var matches.
+
+    For each placeholder _G, the *master* is the first variable name in ``b``
+    (left-to-right argument order, first occurrence) that maps to _G. Every
+    other variable from ``a`` or ``b`` that maps to the same placeholder is
+    bound to ``Term.variable(master)``; the master has no entry in the
+    substitution.
+    """
+    a_vars = { name for arg in a.args
+               for name in _collect_variable_names_from_arg(arg) }
+    b_vars = { name for arg in b.args
+               for name in _collect_variable_names_from_arg(arg) }
+    if not a_vars or not b_vars:
+        return resolved
+
+    a_var_order = _ordered_unique_var_names_from_predicate(a)
+
+    placeholder_to_var_names: Dict[str, set[str]] = {}
+    for var_name, term in resolved.items():
+        if not term.is_variable or not term.name.startswith("_"):
+            continue
+        if var_name not in a_vars and var_name not in b_vars:
+            continue
+        placeholder_to_var_names.setdefault(term.name, set()).add(var_name)
+
+    rewritten = dict(resolved)
+    for _placeholder, var_names in placeholder_to_var_names.items():
+        master: Optional[str] = None
+        for v in a_var_order:
+            if v in var_names:
+                master = v
+                break
+        if master is None:
+            continue
+        for v in var_names:
+            if v == master:
+                continue
+            rewritten[v] = Term.variable(master)
+        rewritten.pop(master, None)
+
+    return rewritten
+
+
 def _inference_policy() -> str:
     """
     Backend policy:
@@ -86,7 +147,7 @@ class _PrologBackend:
             term = _value_to_term(value)
             if term is not None:
                 resolved[str(var_name)] = term
-        return resolved
+        return _rewrite_placeholder_var_var_bindings(resolved, a, b)
 
 
 _PROLOG_BACKEND: Optional[_PrologBackend] = None
