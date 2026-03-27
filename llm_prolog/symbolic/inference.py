@@ -213,7 +213,7 @@ def apply_subst_predicate(pred: Predicate, subst: Substitution) -> Predicate:
             for var_name, bound_term in subst.items():
                 expr = re.sub(rf"\b{re.escape(var_name)}\b", bound_term.name, expr)
 
-        return Predicate(name=pred.name, args=(lhs, Term.constant(expr)))
+            return Predicate(name=pred.name, args=(lhs, Term.constant(expr)))
 
     new_args: List[Term | Predicate] = []
     for t in pred.args:
@@ -1215,6 +1215,9 @@ def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
     any_reduction = False
     current: Clause = consumer
     cur, reduced_open = _global_simplify_clause(current)
+    # TODO REMOVE DEBUG
+    print(f"{'' if reduced_open else "Not"} reduced: {cur}")
+    # TODO REMOVE DEBUG END
     if reduced_open:
         any_reduction = True
     current = cur
@@ -1234,12 +1237,19 @@ def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
         if len(slots[i]) != 1:
             continue
         atom = slots[i][0]
+        # TODO REMOVE DEBUG
+        print("0"*30)
+        print(f"atom {i}: {atom}")
+        # TODO REMOVE DEBUG END
         for pool_idx, prod in enumerate(pool):
             # Handle fact slotting
             if isinstance(prod, Fact):
                 subst = unify_predicates(atom, prod.predicate)
                 if subst is None:
                     continue
+                # TODO REMOVE DEBUG
+                print(f"Fact {prod} slotted to atom {i}: {atom}")
+                # TODO REMOVE DEBUG END
                 slots[i] = []
             # Handle rule slotting
             else:
@@ -1251,17 +1261,42 @@ def infer_new_premise(premises: List[Premise]) -> Optional[Clause]:
                 if subst is None:
                     continue
                 slots[i] = [apply_subst_predicate(p, subst) for p in prod_f.body]
+                # TODO REMOVE DEBUG
+                print("*"*10)
+                print(f"Rule {prod_f} slotted to atom {i}: {atom}")
+                print(f"Slot now of form: {slots[i]}")
+                # TODO REMOVE DEBUG END
             # Apply substitution to head & other slots
+            # TODO REMOVE DEBUG
+            print("-"*20)
+            print(f"Pre-substitution head: {head}")
+            for j in range(n):
+                print(f"- Slot {j}: {slots[j]}")
+            # TODO REMOVE DEBUG END
             head = apply_subst_predicate(head, subst)
             for j in range(n):
                 slots[j] = [apply_subst_predicate(p, subst) for p in slots[j]]
+            # TODO REMOVE DEBUG
+            print(f"Substitution: {subst}")
+            print(f"Post-substitution head: {head}")
+            for j in range(n):
+                print(f"- Slot {j}: {slots[j]}")
+            print("-"*20)
+            # TODO REMOVE DEBUG END
             # Remove applied object from pool_idx
             pool.pop(pool_idx)
             slot_applied = True
             break
 
     out = _slots_to_clause(head, slots)
+    # TODO REMOVE DEBUG
+    print("-"*20)
+    print(f"Clause from slots: {out}")
+    # TODO REMOVE DEBUG END
     cur_end, reduced_end = _global_simplify_clause(out)
+    # TODO REMOVE DEBUG
+    print(f"{'' if reduced_open else "Not"} reduced at ene: {cur_end}")
+    # TODO REMOVE DEBUG END
     if reduced_end:
         any_reduction = True
     out = cur_end
