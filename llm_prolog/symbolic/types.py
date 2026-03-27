@@ -236,7 +236,14 @@ class SelectorDecision:
     proposed_new_premise: Optional[str]
     background_premises: List[str]
     is_answer_goal: bool
+    # Termination-check results computed by the LLM (same single call as selection).
+    # If `is_final_solution` is true, `solution_premise_id` names a ground fact in the
+    # current premises, and `answer_link_rule` is a linking rule that maps that ground
+    # fact to the configured answer head predicate.
     should_stop: bool
+    is_final_solution: bool = False
+    solution_premise_id: Optional[int] = None
+    answer_link_rule: Optional[str] = None
     stop_reason: Optional[str] = None
 
     def __repr__(self) -> str:
@@ -246,6 +253,9 @@ class SelectorDecision:
             f"proposed_new_premise={self.proposed_new_premise}, "
             f"background_premises={self.background_premises}, "
             f"is_answer_goal={self.is_answer_goal}, "
+            f"is_final_solution={self.is_final_solution}, "
+            f"solution_premise_id={self.solution_premise_id}, "
+            f"answer_link_rule={self.answer_link_rule}, "
             f"should_stop={self.should_stop}, "
             f"stop_reason={self.stop_reason})"
         )
@@ -289,7 +299,13 @@ def _initial_premises_for_report(final_premises: List[Premise]) -> List[Premise]
         (
             p
             for p in final_premises
-            if (p.source or "") not in ("inference", "selector_background")
+            if (p.source or "")
+            not in (
+                "inference",
+                "selector_background",
+                "termination_checker",
+                "termination_checker_inference",
+            )
         ),
         key=lambda p: p.id,
     )

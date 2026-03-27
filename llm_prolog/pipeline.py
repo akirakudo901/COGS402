@@ -37,6 +37,7 @@ from .symbol_nl_converter import symbols_to_nl, symbols_to_nl_async
 class PipelineConfig:
     max_steps: int = 10
     explain: bool = True
+    use_termination_checks: bool = False
 
 
 @dataclass
@@ -171,6 +172,90 @@ def _answer_matches(premise: Premise, answer_spec: AnswerSpec) -> bool:
     return bound is not None and not bound.is_variable
 
 
+def _is_ground_fact(premise: Premise) -> bool:
+    """
+    A "ground fact" is a Fact whose entire predicate arguments contain no variables.
+    """
+    from .symbolic.types import Fact, Predicate, Term
+
+    clause = premise.clause
+    if not isinstance(clause, Fact):
+        return False
+
+    def _args_ground(pred: Predicate) -> bool:
+        for arg in pred.args:
+            if isinstance(arg, Term):
+                if arg.is_variable:
+                    return False
+            elif isinstance(arg, Predicate):
+                if not _args_ground(arg):
+                    return False
+        return True
+
+    return _args_ground(clause.predicate)
+
+
+def _handle_termination_decision_common(
+    *,
+    premises: List[Premise],
+    decision: Any,
+    answer_spec: AnswerSpec,
+    rule_source: str = "termination_checker",
+) -> tuple[bool, Optional[Premise], Optional[Premise], Optional[str]]:
+    """
+    Helper for processing the LLM termination-check fields inside `SelectorDecision`.
+    Returns (should_stop, inferred_answer_premise, proposed_rule_premise, stop_reason)
+    """
+    if not decision.is_final_solution:
+        return False, None, None, None
+
+    if decision.solution_premise_id is None or decision.answer_link_rule is None:
+        return False, None, None, None
+
+    solution_premise = _find_premise_by_id(premises, decision.solution_premise_id)
+    if solution_premise is None or not _is_ground_fact(solution_premise):
+        return False, None, None, None
+
+    try:
+        proposed_clause = parse_fact_or_rule(str(decision.answer_link_rule))
+    except Exception:
+        return False, None, None, None
+
+    from .symbolic.types import Rule
+    if not isinstance(proposed_clause, Rule):
+        return False, None, None, None
+
+    next_id = max((p.id for p in premises), default=0) + 1
+    proposed_rule_premise = Premise(
+        id=next_id,
+        clause=proposed_clause,
+        nl=None,
+        source=rule_source,
+        parent_ids=[solution_premise.id],
+    )
+
+    # 3) Combine chosen ground solution + proposed linking rule.
+    inferred_clause = infer_new_premise([proposed_rule_premise, solution_premise])
+    if inferred_clause is None:
+        return False, None, None, None
+
+    inferred_answer_premise = Premise(
+        id=-1,
+        clause=inferred_clause,
+        nl=None,
+        source="termination_checker_inference",
+        parent_ids=[solution_premise.id, proposed_rule_premise.id],
+    )
+
+    # 4) Final verification against the configured answer head.
+    if _answer_matches(inferred_answer_premise, answer_spec):
+        premises.append(proposed_rule_premise)
+        return True, inferred_answer_premise, proposed_rule_premise, "termination_checker_verified"
+
+    # Discard the proposed rule if it doesn't truly imply the answer head.
+    return False, None, None, None
+
+
 def _apply_explanations_to_premises(premises: List[Premise], explanations: Mapping[int, str]) -> None:
     for p in premises:
         if p.id in explanations:
@@ -190,7 +275,7 @@ def _process_symbolic_decision_step(
 
     Returns:
     - updated premises (same list object; returned for convenience)
-    - final answer premise if found
+    - (currently unused) final answer premise if found
     - a PipelineStep to append
     - should_stop (break loop)
     - reason (if should_stop)
@@ -341,9 +426,6 @@ def _process_symbolic_decision_step(
         note=None,
     )
 
-    if _answer_matches(new_premise, answer_spec):
-        return premises, new_premise, step, True, "answer_head_matched", None
-
     return premises, None, step, False, None, None
 
 
@@ -379,9 +461,49 @@ def _run_symbolic_steps(
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
+            use_termination_checks=pipeline_cfg.use_termination_checks,
         )
 
-        premises, found_answer, step, should_stop, stop_reason, failed_step = _process_symbolic_decision_step(
+        if pipeline_cfg.use_termination_checks:
+            # 1) Termination check first (single LLM call already returned its conclusion).
+            should_stop, inferred_answer_premise, proposed_rule_premise, stop_reason = (
+                _handle_termination_decision_common(
+                    premises=premises,
+                    decision=decision,
+                    answer_spec=answer_spec,
+                )
+            )
+            if should_stop and inferred_answer_premise is not None and proposed_rule_premise is not None:
+                # Avoid mis-reporting selector-proposed background premises: we did not apply them.
+                step_decision = SelectorDecision(
+                    selected_premise_ids=[],
+                    proposed_new_premise=None,
+                    background_premises=[],
+                    is_answer_goal=False,
+                    is_final_solution=False,
+                    solution_premise_id=None,
+                    answer_link_rule=None,
+                    should_stop=False,
+                    stop_reason=None,
+                )
+                used_ids = [decision.solution_premise_id] if decision.solution_premise_id is not None else []
+                steps.append(
+                    PipelineStep(
+                        step_index=step_idx,
+                        used_premise_ids=used_ids,
+                        new_premise=proposed_rule_premise,
+                        decision=step_decision,
+                        success=True,
+                        note=None,
+                    )
+                )
+                success = True
+                final_answer = inferred_answer_premise
+                reason = stop_reason
+                break
+
+        # 2) If termination didn't verify, run the selector's inference.
+        premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
             step_idx=step_idx,
             premises=premises,
             answer_spec=answer_spec,
@@ -391,10 +513,11 @@ def _run_symbolic_steps(
         steps.append(step)
         if failed_step is not None:
             failed_steps.append(failed_step)
-        if should_stop:
+
+        if step.new_premise is not None and _answer_matches(step.new_premise, answer_spec):
             success = True
-            final_answer = found_answer
-            reason = stop_reason
+            final_answer = step.new_premise
+            reason = "answer_head_matched"
             break
 
     return success, final_answer, steps, reason
@@ -432,9 +555,49 @@ async def _run_symbolic_steps_async(
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
+            use_termination_checks=pipeline_cfg.use_termination_checks,
         )
 
-        premises, found_answer, step, should_stop, stop_reason, failed_step = _process_symbolic_decision_step(
+        if pipeline_cfg.use_termination_checks:
+            # 1) Termination check first (single LLM call already returned its conclusion).
+            should_stop, inferred_answer_premise, proposed_rule_premise, stop_reason = (
+                _handle_termination_decision_common(
+                    premises=premises,
+                    decision=decision,
+                    answer_spec=answer_spec,
+                )
+            )
+            if should_stop and inferred_answer_premise is not None and proposed_rule_premise is not None:
+                # Avoid mis-reporting selector-proposed background premises: we did not apply them.
+                step_decision = SelectorDecision(
+                    selected_premise_ids=[],
+                    proposed_new_premise=None,
+                    background_premises=[],
+                    is_answer_goal=False,
+                    is_final_solution=False,
+                    solution_premise_id=None,
+                    answer_link_rule=None,
+                    should_stop=False,
+                    stop_reason=None,
+                )
+                used_ids = [decision.solution_premise_id] if decision.solution_premise_id is not None else []
+                steps.append(
+                    PipelineStep(
+                        step_index=step_idx,
+                        used_premise_ids=used_ids,
+                        new_premise=proposed_rule_premise,
+                        decision=step_decision,
+                        success=True,
+                        note=None,
+                    )
+                )
+                success = True
+                final_answer = inferred_answer_premise
+                reason = stop_reason
+                break
+
+        # 2) If termination didn't verify, run the selector's inference.
+        premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
             step_idx=step_idx,
             premises=premises,
             answer_spec=answer_spec,
@@ -444,10 +607,11 @@ async def _run_symbolic_steps_async(
         steps.append(step)
         if failed_step is not None:
             failed_steps.append(failed_step)
-        if should_stop:
+
+        if step.new_premise is not None and _answer_matches(step.new_premise, answer_spec):
             success = True
-            final_answer = found_answer
-            reason = stop_reason
+            final_answer = step.new_premise
+            reason = "answer_head_matched"
             break
 
     return success, final_answer, steps, reason
