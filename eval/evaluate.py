@@ -94,7 +94,13 @@ specs = [
 ]
 
 mode = PipelineMode.SYMBOLIC_HYBRID
-pipeline_cfg = PipelineConfig(max_steps=10, explain=True)
+pipeline_cfg = PipelineConfig(
+    max_steps=20, 
+    explain=True,
+    use_termination_checks=False,
+    use_final_termination_check=True,
+    selector_num_candidates=3
+    )
 
 TASK_SIZE = 50
 multi_suite2 = [
@@ -107,7 +113,7 @@ multi_suite2 = [
         pipeline_cfg=pipeline_cfg,
         keep_all_outcomes=True,
         keep_random_k=0,
-        seed=0
+        seed=1
     )
     for specific_spec in specs
 ]
@@ -120,7 +126,8 @@ pipeline_cfg = PipelineConfig(
     max_steps=20, 
     explain=True, 
     use_termination_checks=False, 
-    use_final_termination_check=True
+    use_final_termination_check=True,
+    selector_num_candidates=3
     )
 
 fail_derive_ids = [3, 9, 10, 14, 17, 23, 28, 33, 39, 40, 48, 49]
@@ -150,17 +157,17 @@ def return_suite(name, ids):
 
 multi_suite3 = [
     return_suite(fail_derive_name, fail_derive_ids),
-    return_suite(combined_already_name, combined_already_ids),
-    return_suite(only_one_premise_name, only_one_premise_ids)
+    # return_suite(combined_already_name, combined_already_ids),
+    # return_suite(only_one_premise_name, only_one_premise_ids)
 ]
 
 #################
 # RUN OF CHOICE #
 #################
-suites_of_choice = multi_suite3
+suites_of_choice = multi_suite2
 
 for s in suites_of_choice:
     print("~"*50)
     print(s.get_description())
-    report = asyncio.run(s.run_async(max_in_flight=15, print_progress=True, show_openrouter_balance=True))
+    report = asyncio.run(s.run_async(max_in_flight=20, print_progress=True, show_openrouter_balance=True))
     print(report)
