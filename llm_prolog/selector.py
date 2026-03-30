@@ -14,90 +14,14 @@ from typing import Any, Dict, List, Optional
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
 from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premises
-
-
-SYSTEM_PROMPT_INTRO = """
-You are a symbolic reasoning planner working over a Prolog‑style theory.
-
-You are given:
-- A natural language problem with a question or goal.
-- A list of existing premises (facts and rules) with IDs.
-- A target answer head predicate we ultimately want to prove.
-- A (possibly empty) list of failed past reasoning steps grouped by reason.
-
-Your task for each step:
-"""
-
-TERMINATION_CHECK_SECTION = """
-- First, perform a termination check using the provided existing premises (the current
-  list of facts and rules).
-- Decide whether the system already has a "final solution" ground fact available.
-  A "final solution" captures the solution to the natural language problem + question / goal provided,
-  even if it is NOT the answer head predicate itself.
-  A "final solution" MUST a ground fact: a fact whose predicate arguments contain no variables.
-- If such a ground fact exists, you MUST also propose a single Prolog rule that links the chosen
-  ground-fact predicate to the answer head predicate.
-  The linking rule MUST have the answer head predicate as its head and the chosen ground fact's
-  predicate as the (single) body atom, with the answer variable passed through.
-More concretely, if a final solution exists:
-  - set "is_final_solution" to true
-  - set "solution_premise_id" to the ID of the chosen "final solution" ground fact premise
-  - set "answer_link_rule" to a single Prolog rule that links the chosen ground fact to the
-    answer head predicate (exactly one body atom):
-      <answer_head>(<AnswerVar>) :- <solution_predicate>(<AnswerVar>, <OtherConstantsIfAny>)
-    e.g. if the question asks for the total for marc, and answer_head is "Answer" and solution premise is "Total(32, marc)", 
-    then "Answer(X) :- Total(X, marc)."
-    Use the answer head predicate exactly as provided, including its distinguished answer variable.
-  - The answer head in the linking rule MUST use the same predicate name and constants as the provided
-    answer head predicate, except one variable for the value in question we want to extract.
-  - Use exactly one body atom in the linking rule.
-  - Do not add a trailing period to the rule string.
-
-- If termination criteria are NOT met, set "is_final_solution" to false, and set the other
-  termination fields to null.
-
-Once done with termination check:
-"""
-
-SELECTOR_MAIN_SECTION = """
-- State what new premise you intend for the inference engine to derive. This premise 
-  must be new among existing premises.
-- Indicate whether this new premise is directly the answer head goal.
-- Optionally propose new background premises (facts or rules) if the
-  current theory is insufficient.
-- Choose exactly ONE **consumer** rule (a clause with a head and body) by `selected_rule_id`.
-- Choose ONE OR MORE **producers** by listing their premise IDs in `selected_fact_ids` in the **order**
-  they should be applied. Each producer may be a **fact** (head only) or a **rule** (head and body).
-  For each goal position in the consumer, in order, the inference engine consumes the **first** producer 
-  in the remaining producers' 'pool' that unifies with that goal. Producers used for a goal are removed from the pool.
-- You MUST NOT choose an order of premises that has been previously combined to produce an existing premise.
-- Use the failed-step history to avoid repeating choices that failed for known reasons.
-
-Output MUST be a single JSON object with the fields:
-"""
-
-TERMINATION_CHECK_JSON_SECTION = """
-For termination check:
-- "is_final_solution": boolean.
-- "solution_premise_id": integer ID of the chosen "final solution" ground fact premise, or null.
-- "answer_link_rule": string Prolog rule (no trailing period) linking solution to answer head,
-  or null.
-
-For selection of next premise:
-"""
-
-SELECTOR_JSON_SECTION = """
-- "proposed_new_premise": string or null (a Prolog‑style clause WITHOUT
-  needing to be valid; this is an intention. It must be new from existing premises).
-- "is_new_proposal": boolean.
-- "is_answer_goal": boolean.
-- "background_premises": list of strings, each a fact or rule ending
-  with a period.
-- "selected_rule_id": integer ID of the **consumer** rule premise for this step.
-- "selected_fact_ids": ordered list of integer IDs of **producer** premises (each may be a fact or a
-  rule). Order matters: the engine matches slot 0 against producers in this order, then slot 1 against
-  what remains, and so on.
-"""
+from .system_prompts import (
+    SELECTOR_JSON_SECTION,
+    SELECTOR_MAIN_SECTION,
+    SYSTEM_PROMPT_INTRO,
+    TERMINATION_CHECK_JSON_SECTION,
+    TERMINATION_CHECK_SECTION,
+    TERMINATION_CHECK_SYSTEM_PROMPT,
+)
 
 
 def _build_system_prompt(*, use_termination_checks: bool, system_prompt_override: str | None) -> str:
@@ -112,41 +36,6 @@ def _build_system_prompt(*, use_termination_checks: bool, system_prompt_override
     if use_termination_checks:
         return (intro + termination_desc + selector_main + termination_json + selector_json)
     return (intro + selector_main + selector_json)
-
-
-# NOT CURRENTLY IN USE; Possibly useful in the future if we isolte the selector from termination checker
-TERMINATION_CHECK_SYSTEM_PROMPT = """
-You are a termination checker for a symbolic (Prolog-like) reasoning system.
-
-Given:
-- A natural language problem.
-- A set of current Prolog-style premises (facts and rules) with IDs.
-- The target answer head predicate we ultimately want to prove.
-- The most recently derived premise (at the current step) as a distinguished item.
-
-Your job:
-- Decide whether there is a "final solution" ground fact available at the most recent step.
-  A "final solution" MUST be a ground fact: a fact whose predicate arguments contain no variables.
-  The ground fact should capture the constant(s) needed for the final answer, even if it is NOT
-  the answer head predicate itself.
-- If such a ground fact exists, you MUST also propose a single Prolog rule that links the chosen
-  ground-fact predicate to the answer head predicate.
-  The linking rule MUST have the answer head predicate as its head and the chosen ground fact's
-  predicate as the (single) body atom, with the answer variable passed through.
-
-Output MUST be a single JSON object with exactly these fields:
-- "is_final_solution": boolean
-- "solution_premise_id": integer ID of the chosen ground fact, or null
-- "answer_link_rule": string of the form "<answer_head>(<AnswerVar>) :- <solution_predicate>(<AnswerVar>, <OtherConstantsIfAny>)", or null
-  e.g. if the question asks for the total for marc, and answer_head is "Answer" and solution premise is "Total(32, marc)", 
-  then "Answer(X) :- Total(X, marc)."
-
-Rules:
-- The answer head in the linking rule MUST use the same predicate name and constants as the provided
-  answer head predicate, except one variable for the value in question we want to extract.
-- Use exactly one body atom in the linking rule.
-- Do not add a trailing period to the rule string.
-"""
 
 
 @dataclass
