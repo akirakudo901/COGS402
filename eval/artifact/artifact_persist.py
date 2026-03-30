@@ -24,6 +24,11 @@ from eval.eval_suite import (
     SimpleEvalTask,
     SuiteReport,
 )
+from llm_prolog.system_prompts import (
+    SYSTEM_PROMPTS_BY_NAME,
+    SYSTEM_PROMPT_HASHES_BY_NAME,
+    hash_system_prompt_text,
+)
 
 
 def new_run_id() -> str:
@@ -49,6 +54,164 @@ def git_code_version(repo_root: Optional[Path] = None) -> str:
     except (OSError, subprocess.TimeoutExpired):
         pass
     return "unknown"
+
+
+def _get_prompt_override(
+    prompt_overrides: Optional[Mapping[Any, str]],
+    role: str,
+) -> Optional[str]:
+    """
+    Find the override string for a given role.
+
+    Mirrors the pipeline's `_role_key` behavior.
+    """
+    def _role_key(role: Any) -> str:
+        """
+        Normalize a role key (Enum or string) to a stable string.
+        """
+        if isinstance(role, str):
+            return role
+        value = getattr(role, "value", None)
+        if isinstance(value, str):
+            return value
+        return str(role)
+
+    if not prompt_overrides:
+        return None
+    for k, v in prompt_overrides.items():
+        if _role_key(k) == role:
+            return v
+    return None
+
+
+def _maybe_add_used_prompt_entry(
+    entries: List[Dict[str, Any]],
+    *,
+    component: str,
+    prompt_name: str,
+    prompt_text: str,
+) -> None:
+    entries.append(
+        {
+            "component": component,
+            "prompt_name": prompt_name,
+            "prompt_hash": hash_system_prompt_text(prompt_text),
+        }
+    )
+
+
+def _system_prompts_used_by_role(
+    *,
+    suite: EvaluationSuite
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Compute which system prompts were used for each role/model in this suite run.
+
+    We record:
+    - which role used which system prompt (component-level)
+    - the SHA-256 hash of that prompt text
+    """
+    prompt_overrides = suite.prompt_overrides or {}
+
+    used_roles: Dict[str, List[Dict[str, Any]]] = {}
+    required_roles = [r.value for r in suite.pipeline_mode.get_required_roles()]
+    for rr in required_roles:
+        used_roles[rr] = []
+    
+
+    if suite.pipeline_mode == PipelineMode.SYMBOLIC_HYBRID:
+        # nl_to_symbol
+        nl_override = _get_prompt_override(prompt_overrides, "nl_to_symbol")
+        if nl_override is not None:
+            _maybe_add_used_prompt_entry(
+                used_roles["nl_to_symbol"],
+                component="nl_to_symbol",
+                prompt_name="override:nl_to_symbol",
+                prompt_text=nl_override,
+            )
+        else:
+            _maybe_add_used_prompt_entry(
+                used_roles["nl_to_symbol"],
+                component="nl_to_symbol",
+                prompt_name="nl_to_symbol",
+                prompt_text=SYSTEM_PROMPTS_BY_NAME["nl_to_symbol"],
+            )
+
+        # selector (select_next_step)
+        selector_override = _get_prompt_override(prompt_overrides, "selector")
+        if selector_override is not None:
+            _maybe_add_used_prompt_entry(
+                used_roles["selector"],
+                component="selector_select_next_step",
+                prompt_name="override:selector",
+                prompt_text=selector_override,
+            )
+        else:
+            if suite.pipeline_cfg.use_termination_checks:
+                cname = "selector_with_termination_checks"
+            else:
+                cname = "selector_no_termination_checks"
+            _maybe_add_used_prompt_entry(
+                used_roles["selector"],
+                component="selector_select_next_step",
+                prompt_name=cname,
+                prompt_text=SYSTEM_PROMPTS_BY_NAME[cname],
+            )
+
+        # selector (final termination-check)
+        if suite.pipeline_cfg.use_final_termination_check:
+            if selector_override is not None:
+                _maybe_add_used_prompt_entry(
+                    used_roles["selector"],
+                    component="final_termination_check",
+                    prompt_name="override:selector",
+                    prompt_text=selector_override,
+                )
+            else:
+                _maybe_add_used_prompt_entry(
+                    used_roles["selector"],
+                    component="final_termination_check",
+                    prompt_name="final_termination_check",
+                    prompt_text=SYSTEM_PROMPTS_BY_NAME["final_termination_check"],
+                )
+
+        # symbol_to_nl (only if explain is enabled)
+        if suite.pipeline_cfg.explain:
+            sym2nl_override = _get_prompt_override(prompt_overrides, "symbol_to_nl")
+            if sym2nl_override is not None:
+                _maybe_add_used_prompt_entry(
+                    used_roles["symbol_to_nl"],
+                    component="symbol_to_nl",
+                    prompt_name="override:symbol_to_nl",
+                    prompt_text=sym2nl_override,
+                )
+            else:
+                _maybe_add_used_prompt_entry(
+                    used_roles["symbol_to_nl"],
+                    component="symbol_to_nl",
+                    prompt_name="symbol_to_nl",
+                    prompt_text=SYSTEM_PROMPTS_BY_NAME["symbol_to_nl"],
+                )
+
+    elif suite.pipeline_mode == PipelineMode.COT_BASELINE:
+        # cot_solver (only for cot_baseline)
+        cot_override = _get_prompt_override(prompt_overrides, "cot_solver")
+        if cot_override is not None:
+            _maybe_add_used_prompt_entry(
+                used_roles["cot_solver"],
+                component="cot_solver",
+                prompt_name="override:cot_solver",
+                prompt_text=cot_override,
+            )
+        else:
+            _maybe_add_used_prompt_entry(
+                used_roles["cot_solver"],
+                component="cot_solver",
+                prompt_name="cot_solver",
+                prompt_text=SYSTEM_PROMPTS_BY_NAME["cot_solver"],
+            )
+
+    return used_roles
 
 
 def model_specs_by_role_json(model_by_role: ModelMapping) -> Dict[str, Dict[str, Any]]:
@@ -370,6 +533,10 @@ def persist_evaluation_run(
         "llm_usage": llm_usage,
         "failure_counts_by_category": dict(sorted(failure_counts.items(), key=lambda x: (-x[1], x[0]))),
         "harness": harness,
+        "system_prompts_hashes_by_canonical_name": dict(SYSTEM_PROMPT_HASHES_BY_NAME),
+        "system_prompts_used_by_role": _system_prompts_used_by_role(
+            suite=suite
+        ),
     }
     (run_dir / "run_meta.json").write_text(
         json.dumps(run_meta, indent=2, ensure_ascii=False) + "\n",
