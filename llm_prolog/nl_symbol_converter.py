@@ -19,32 +19,7 @@ from .symbolic.types import (
     parse_fact_or_rule,
     parse_predicate,
 )
-
-
-SYSTEM_PROMPT = """
-You are a reasoning assistant that converts general natural language problems into a small
-Prolog‑style Horn clause theory.
-
-Language:
-- Facts: predicate(constant1, constant2, ...).
-- Rules: head(X, Y) :- body1(X), body2(X, Y).
-- Variables start with an uppercase letter.
-- Constants are lowercase identifiers or numbers.
-
-Goal:
-- Extract base facts from the problem statement.
-- Introduce simple rules that connect those facts to the question or goal.
-- Define a single answer head predicate with exactly one variable representing
-  the final answer, such as answer(Value) or eq(Lhs, rhs).
-
-Output format:
-- You MUST return a single JSON object with the keys:
-  - "facts": list of strings, each a fact ending with a period.
-  - "rules": list of strings, each a rule ending with a period.
-  - "answer_head": a single predicate string WITHOUT a trailing period.
-  - "explanations": list of strings of same length as facts+rules, giving
-    a short natural‑language gloss for each clause.
-"""
+from .system_prompts import NL_TO_SYMBOL_SYSTEM_PROMPT
 
 
 def _build_user_prompt(problem: str) -> str:
@@ -73,7 +48,7 @@ def convert_problem_to_symbols(
     Convert a natural‑language problem into initial symbolic premises and an answer spec.
     """
     user_prompt = _build_user_prompt(problem)
-    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    system_prompt = system_prompt_override or NL_TO_SYMBOL_SYSTEM_PROMPT
     data = llm.generate_json(
         system_prompt,
         user_prompt,
@@ -131,7 +106,7 @@ async def convert_problem_to_symbols_async(
     Async version: convert NL problem to symbolic premises and answer spec via LLMExecutor.
     """
     user_prompt = _build_user_prompt(problem)
-    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    system_prompt = system_prompt_override or NL_TO_SYMBOL_SYSTEM_PROMPT
     data = await llm_exec.generate_json(
         system_prompt,
         user_prompt,

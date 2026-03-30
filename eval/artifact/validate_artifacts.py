@@ -170,6 +170,58 @@ def validate_run_dir(run_dir: Path) -> Tuple[bool, List[str]]:
         if mi is not None and not isinstance(mi, int):
             errors.append("run_meta.json.harness.max_in_flight must be an integer or null")
 
+    # Optional: system prompt registry usage + hashes
+    sp_hashes = meta.get("system_prompts_hashes_by_canonical_name")
+    if sp_hashes is not None:
+        if not isinstance(sp_hashes, dict):
+            errors.append("run_meta.json key 'system_prompts_hashes_by_canonical_name' must be an object")
+        else:
+            for name, h in sp_hashes.items():
+                if not isinstance(name, str):
+                    errors.append(
+                        "run_meta.json.system_prompts_hashes_by_canonical_name keys must be strings"
+                    )
+                    break
+                if not isinstance(h, str):
+                    errors.append(
+                        f"run_meta.json.system_prompts_hashes_by_canonical_name[{name!r}] must be a string"
+                    )
+                    break
+                if len(h) != 64:
+                    errors.append(
+                        f"run_meta.json.system_prompts_hashes_by_canonical_name[{name!r}] must look like sha256 hex"
+                    )
+                    break
+
+    sp_used = meta.get("system_prompts_used_by_role")
+    if sp_used is not None:
+        if not isinstance(sp_used, dict):
+            errors.append("run_meta.json key 'system_prompts_used_by_role' must be an object")
+        else:
+            for role, entries in sp_used.items():
+                if not isinstance(role, str):
+                    errors.append("run_meta.json.system_prompts_used_by_role keys must be strings")
+                    break
+                if not isinstance(entries, list):
+                    errors.append(f"run_meta.json.system_prompts_used_by_role[{role!r}] must be a list")
+                    break
+                for i, ent in enumerate(entries):
+                    if not isinstance(ent, dict):
+                        errors.append(
+                            f"run_meta.json.system_prompts_used_by_role[{role!r}][{i}] must be an object"
+                        )
+                        continue
+                    for k in ("component", "prompt_name", "prompt_hash"):
+                        if k not in ent:
+                            errors.append(
+                                f"run_meta.json.system_prompts_used_by_role[{role!r}][{i}] missing key {k!r}"
+                            )
+                    ph = ent.get("prompt_hash")
+                    if isinstance(ph, str) and len(ph) != 64:
+                        errors.append(
+                            f"run_meta.json.system_prompts_used_by_role[{role!r}][{i}].prompt_hash must look like sha256 hex"
+                        )
+
     ds = meta.get("dataset")
     if isinstance(ds, dict):
         spec = ds.get("subset_spec")
