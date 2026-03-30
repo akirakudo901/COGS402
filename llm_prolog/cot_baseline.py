@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
+from .system_prompts import COT_SOLVER_SYSTEM_PROMPT
 
 
 @dataclass(frozen=True)
@@ -35,10 +36,7 @@ def run_cot_baseline(
     Returns a CoTResult containing the raw response and a best-effort extracted final answer.
     Dataset-specific validators should interpret CoTResult.answer_text appropriately.
     """
-    system_prompt = system_prompt_override or (
-        "You are a careful problem solver. Solve the user's problem.\n"
-        "Return your final answer on a line starting with 'FINAL:' followed by the answer."
-    )
+    system_prompt = system_prompt_override or COT_SOLVER_SYSTEM_PROMPT
     user_content = problem.strip()
     raw = llm.generate(
         system_prompt,
@@ -73,10 +71,7 @@ async def run_cot_baseline_async(
     """
     Async Chain-of-Thought baseline via LLMExecutor.
     """
-    system_prompt = system_prompt_override or (
-        "You are a careful problem solver. Solve the user's problem.\n"
-        "Return your final answer on a line starting with 'FINAL:' followed by the answer."
-    )
+    system_prompt = system_prompt_override or COT_SOLVER_SYSTEM_PROMPT
     user_content = problem.strip()
     raw = await llm_exec.generate(
         system_prompt,
