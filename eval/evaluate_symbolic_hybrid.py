@@ -57,111 +57,112 @@ def get_gsm8K_eval_task(
         )
 
 
-# eval suite 1: trial
-trial_spec = ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None)
+if __name__ == "__main__":
+    # eval suite 1: trial
+    trial_spec = ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None)
 
-mode = PipelineMode.SYMBOLIC_HYBRID
-pipeline_cfg = PipelineConfig(max_steps=10, explain=True)
+    mode = PipelineMode.SYMBOLIC_HYBRID
+    pipeline_cfg = PipelineConfig(max_steps=10, explain=True)
 
-TASK_SIZE = 1
-suite1 = EvaluationSuite(
-    name=f"{spec_to_name(trial_spec)} Symbolic Hybrid On GSM8K ({TASK_SIZE}EX)",
-    tasks=[get_gsm8K_eval_task(size=TASK_SIZE),],
-    pipeline_mode=mode,
-    model_by_role=ModelMapping.set_spec_to_all_roles(trial_spec, mode),
-    prompt_overrides=None,
-    pipeline_cfg=pipeline_cfg,
-    keep_all_outcomes=True,
-    keep_random_k=0,
-    seed=0
-)
-multi_suite1 = [suite1, ]
-
-# eval suite 2: qwen different sizes on GSM8K of size 20
-specs = [
-    # ModelSpec(model="meta-llama/llama-3.2-3b-instruct", temperature=0.5, max_tokens=None),
-    # ModelSpec(model="meta-llama/llama-3.1-8b-instruct", temperature=0.5, max_tokens=None),
-    # ModelSpec(model="meta-llama/llama-3.3-70b-instruct", temperature=0.5, max_tokens=None),
-    # ModelSpec(model="meta-llama/llama-3.1-405b-instruct", temperature=0.5, max_tokens=None), #EXPENSIVE! $5 WON'T LAST FOR LONG
-    
-    # GPTs
-    # ModelSpec(model="openai/gpt-5-mini", temperature=0.5, max_tokens=None),
-    ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None),
-
-    # Qwens
-    # ModelSpec(model="qwen/qwen3-235b-a22b-2507", temperature=0.5, max_tokens=None),
-    # ModelSpec(model="qwen/qwen3-30b-a3b-instruct-2507", temperature=0.5, max_tokens=None),
-    # ModelSpec(model="qwen/qwen3-coder-30b-a3b-instruct", temperature=0.5, max_tokens=None),
-]
-
-mode = PipelineMode.SYMBOLIC_HYBRID
-pipeline_cfg = PipelineConfig(max_steps=10, explain=True)
-
-TASK_SIZE = 50
-multi_suite2 = [
-    EvaluationSuite(
-        name=f"{spec_to_name(specific_spec)} Symbolic Hybrid On GSM8K ({TASK_SIZE}EX)",
+    TASK_SIZE = 1
+    suite1 = EvaluationSuite(
+        name=f"{spec_to_name(trial_spec)} Symbolic Hybrid On GSM8K ({TASK_SIZE}EX)",
         tasks=[get_gsm8K_eval_task(size=TASK_SIZE),],
         pipeline_mode=mode,
-        model_by_role=ModelMapping.set_spec_to_all_roles(specific_spec, mode),
+        model_by_role=ModelMapping.set_spec_to_all_roles(trial_spec, mode),
         prompt_overrides=None,
         pipeline_cfg=pipeline_cfg,
         keep_all_outcomes=True,
         keep_random_k=0,
         seed=0
     )
-    for specific_spec in specs
-]
+    multi_suite1 = [suite1, ]
 
-# eval suite 3: GPT4.1mini on different failure modes to see if they're fixed
-spec = ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None)
+    # eval suite 2: qwen different sizes on GSM8K of size 20
+    specs = [
+        # ModelSpec(model="meta-llama/llama-3.2-3b-instruct", temperature=0.5, max_tokens=None),
+        # ModelSpec(model="meta-llama/llama-3.1-8b-instruct", temperature=0.5, max_tokens=None),
+        # ModelSpec(model="meta-llama/llama-3.3-70b-instruct", temperature=0.5, max_tokens=None),
+        # ModelSpec(model="meta-llama/llama-3.1-405b-instruct", temperature=0.5, max_tokens=None), #EXPENSIVE! $5 WON'T LAST FOR LONG
+        
+        # GPTs
+        # ModelSpec(model="openai/gpt-5-mini", temperature=0.5, max_tokens=None),
+        ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None),
 
-mode = PipelineMode.SYMBOLIC_HYBRID
-pipeline_cfg = PipelineConfig(
-    max_steps=20, 
-    explain=True, 
-    use_termination_checks=False, 
-    use_final_termination_check=True
-    )
+        # Qwens
+        # ModelSpec(model="qwen/qwen3-235b-a22b-2507", temperature=0.5, max_tokens=None),
+        # ModelSpec(model="qwen/qwen3-30b-a3b-instruct-2507", temperature=0.5, max_tokens=None),
+        # ModelSpec(model="qwen/qwen3-coder-30b-a3b-instruct", temperature=0.5, max_tokens=None),
+    ]
 
-fail_derive_ids = [3, 9, 10, 14, 17, 23, 28, 33, 39, 40, 48, 49]
-combined_already_ids = [3, 9, 10, 14, 17, 23, 24, 28, 33, 35, 39, 40, 44, 48, 49]
-only_one_premise_ids = [5, 13, 23, 24, 32, 35, 39, 44]
+    mode = PipelineMode.SYMBOLIC_HYBRID
+    pipeline_cfg = PipelineConfig(max_steps=10, explain=True)
 
-combined_already_ids = [id for id in combined_already_ids if id not in fail_derive_ids]
-only_one_premise_ids = [id for id in only_one_premise_ids  
-                        if (id not in fail_derive_ids) and (id not in combined_already_ids)]
+    TASK_SIZE = 50
+    multi_suite2 = [
+        EvaluationSuite(
+            name=f"{spec_to_name(specific_spec)} Symbolic Hybrid On GSM8K ({TASK_SIZE}EX)",
+            tasks=[get_gsm8K_eval_task(size=TASK_SIZE),],
+            pipeline_mode=mode,
+            model_by_role=ModelMapping.set_spec_to_all_roles(specific_spec, mode),
+            prompt_overrides=None,
+            pipeline_cfg=pipeline_cfg,
+            keep_all_outcomes=True,
+            keep_random_k=0,
+            seed=0
+        )
+        for specific_spec in specs
+    ]
 
-fail_derive_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Failing to derive new premise'"
-combined_already_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Combining previously combined premises'"
-only_one_premise_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Selecting only one premise'"
+    # eval suite 3: GPT4.1mini on different failure modes to see if they're fixed
+    spec = ModelSpec(model="openai/gpt-4.1-mini", temperature=0.5, max_tokens=None)
 
-def return_suite(name, ids):
-    return EvaluationSuite(
-        name=name,
-        tasks=[get_gsm8K_eval_task(ids=ids),],
-        pipeline_mode=mode,
-        model_by_role=ModelMapping.set_spec_to_all_roles(spec, mode),
-        prompt_overrides=None,
-        pipeline_cfg=pipeline_cfg,
-        keep_all_outcomes=True,
-        keep_random_k=0,
-        seed=0
-    )
+    mode = PipelineMode.SYMBOLIC_HYBRID
+    pipeline_cfg = PipelineConfig(
+        max_steps=20, 
+        explain=True, 
+        use_termination_checks=False, 
+        use_final_termination_check=True
+        )
 
-multi_suite3 = [
-    return_suite(fail_derive_name, fail_derive_ids),
-    return_suite(combined_already_name, combined_already_ids),
-    return_suite(only_one_premise_name, only_one_premise_ids)
-]
+    fail_derive_ids = [3, 9, 10, 14, 17, 23, 28, 33, 39, 40, 48, 49]
+    combined_already_ids = [3, 9, 10, 14, 17, 23, 24, 28, 33, 35, 39, 40, 44, 48, 49]
+    only_one_premise_ids = [5, 13, 23, 24, 32, 35, 39, 44]
 
-#################
-# RUN OF CHOICE #
-#################
-suites_of_choice = multi_suite3
+    combined_already_ids = [id for id in combined_already_ids if id not in fail_derive_ids]
+    only_one_premise_ids = [id for id in only_one_premise_ids  
+                            if (id not in fail_derive_ids) and (id not in combined_already_ids)]
 
-for s in suites_of_choice:
-    print("~"*50)
-    print(s.get_description())
-    report = asyncio.run(s.run_async(max_in_flight=15, print_progress=True, show_openrouter_balance=True))
-    print(report)
+    fail_derive_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Failing to derive new premise'"
+    combined_already_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Combining previously combined premises'"
+    only_one_premise_name = f"{spec_to_name(spec)} Symbolic Hybrid On GSM8K For 'Selecting only one premise'"
+
+    def return_suite(name, ids):
+        return EvaluationSuite(
+            name=name,
+            tasks=[get_gsm8K_eval_task(ids=ids),],
+            pipeline_mode=mode,
+            model_by_role=ModelMapping.set_spec_to_all_roles(spec, mode),
+            prompt_overrides=None,
+            pipeline_cfg=pipeline_cfg,
+            keep_all_outcomes=True,
+            keep_random_k=0,
+            seed=0
+        )
+
+    multi_suite3 = [
+        return_suite(fail_derive_name, fail_derive_ids),
+        return_suite(combined_already_name, combined_already_ids),
+        return_suite(only_one_premise_name, only_one_premise_ids)
+    ]
+
+    #################
+    # RUN OF CHOICE #
+    #################
+    suites_of_choice = multi_suite3
+
+    for s in suites_of_choice:
+        print("~"*50)
+        print(s.get_description())
+        report = asyncio.run(s.run_async(max_in_flight=15, print_progress=True, show_openrouter_balance=True))
+        print(report)
