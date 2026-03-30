@@ -45,7 +45,9 @@ class LLMClient(BaseLLMClient):
             timeout=60,
         )
         resp.raise_for_status()
-        return resp.json()
+        body = resp.json()
+        self._accumulate_usage_from_response(body)
+        return body
 
     def generate(
         self,

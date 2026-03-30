@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+# TODO THINK OF A BETTER WAY TO IMPLEMENT THIS! FOR EXAMPLE, DECLARE EACH FIELD AS NEEDING A CERTAIN CHECK,
+# AND THE SUIT CAN AUTOMATICALLY BUILD THIS FOR YOU (E.G. KNOWING SOMETHING MUST BE AN INTEGER, IT CHECKS AUTOMATICALLY)
 
 RUN_META_REQUIRED = (
     "run_id",
@@ -24,7 +26,27 @@ RUN_META_REQUIRED = (
     "model_specs_by_role",
     "ablation",
     "code_version",
+    "overall_accuracy",
+    "run_timing",
+    "llm_usage",
+    "failure_counts_by_category",
+    "harness",
 )
+
+RUN_TIMING_REQUIRED = ("started_at", "finished_at", "duration_seconds")
+
+LLM_USAGE_REQUIRED = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "n_requests",
+    "cost_usd",
+    "reasoning_tokens",
+    "cached_tokens",
+    "cache_write_tokens",
+)
+
+HARNESS_REQUIRED = ("max_in_flight", "suite_seed", "dataset_subset_seed")
 
 PIPELINE_CONFIG_REQUIRED = (
     "max_steps",
@@ -88,6 +110,76 @@ def validate_run_dir(run_dir: Path) -> Tuple[bool, List[str]]:
     for key in RUN_META_REQUIRED:
         if key not in meta:
             errors.append(f"run_meta.json missing key: {key!r}")
+    acc = meta.get("overall_accuracy")
+    if acc is not None and not isinstance(acc, (int, float)):
+        errors.append("run_meta.json key 'overall_accuracy' must be a number")
+
+    run_timing = meta.get("run_timing")
+    if not isinstance(run_timing, dict):
+        errors.append("run_meta.json key 'run_timing' must be an object")
+    else:
+        for k in RUN_TIMING_REQUIRED:
+            if k not in run_timing:
+                errors.append(f"run_meta.json.run_timing missing key: {k!r}")
+            elif k == "duration_seconds" and run_timing[k] is not None and not isinstance(
+                run_timing[k], (int, float)
+            ):
+                errors.append(f"run_meta.json.run_timing.{k} must be a number or null")
+
+    llm_usage = meta.get("llm_usage")
+    if not isinstance(llm_usage, dict):
+        errors.append("run_meta.json key 'llm_usage' must be an object")
+    else:
+        for k in LLM_USAGE_REQUIRED:
+            if k not in llm_usage:
+                errors.append(f"run_meta.json.llm_usage missing key: {k!r}")
+            elif k == "n_requests" and not isinstance(llm_usage[k], int):
+                errors.append(f"run_meta.json.llm_usage.{k} must be an integer")
+            elif k in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "reasoning_tokens",
+                "cached_tokens",
+                "cache_write_tokens",
+            ) and not isinstance(llm_usage[k], int):
+                errors.append(f"run_meta.json.llm_usage.{k} must be an integer")
+            elif k == "cost_usd" and not isinstance(llm_usage[k], (int, float)):
+                errors.append("run_meta.json.llm_usage.cost_usd must be a number")
+
+    fcounts = meta.get("failure_counts_by_category")
+    if not isinstance(fcounts, dict):
+        errors.append("run_meta.json key 'failure_counts_by_category' must be an object")
+    else:
+        for cat, cnt in fcounts.items():
+            if not isinstance(cat, str):
+                errors.append("run_meta.json.failure_counts_by_category keys must be strings")
+                break
+            if not isinstance(cnt, int):
+                errors.append(f"run_meta.json.failure_counts_by_category[{cat!r}] must be an integer")
+                break
+
+    harness = meta.get("harness")
+    if not isinstance(harness, dict):
+        errors.append("run_meta.json key 'harness' must be an object")
+    else:
+        for k in HARNESS_REQUIRED:
+            if k not in harness:
+                errors.append(f"run_meta.json.harness missing key: {k!r}")
+        mi = harness.get("max_in_flight")
+        if mi is not None and not isinstance(mi, int):
+            errors.append("run_meta.json.harness.max_in_flight must be an integer or null")
+
+    ds = meta.get("dataset")
+    if isinstance(ds, dict):
+        spec = ds.get("subset_spec")
+        if spec is not None:
+            if not isinstance(spec, dict):
+                errors.append("run_meta.json dataset.subset_spec must be an object when present")
+            elif "example_ids" not in spec:
+                errors.append("run_meta.json dataset.subset_spec missing key: 'example_ids'")
+            elif not isinstance(spec.get("example_ids"), list):
+                errors.append("run_meta.json dataset.subset_spec.example_ids must be a list")
     pipeline_config = meta.get("pipeline_config")
     if not isinstance(pipeline_config, dict):
         errors.append("run_meta.json key 'pipeline_config' must be an object")

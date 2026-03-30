@@ -207,6 +207,55 @@ def _failure_rows_for_outcome(
     return [row]
 
 
+def _ordered_example_ids_from_report(
+    suite_report: SuiteReport
+) -> List[Any]:
+    """IDs in the same order as persisted example rows (per task, then per outcome)."""
+    ordered: List[Any] = []
+    for trep in suite_report.task_reports:
+        for outcome in trep.outcomes:
+            raw = outcome.example_id
+            try:
+                ordered.append(int(raw))
+            except (TypeError, ValueError):
+                ordered.append(raw)
+    return ordered
+ 
+
+def _timing_llm_harness_for_run_meta(
+    suite: EvaluationSuite,
+    suite_report: SuiteReport,
+    dataset_out: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Normalize SuiteReport.run_metadata into persisted run_meta sections."""
+    rm = dict(suite_report.run_metadata) if suite_report.run_metadata else {}
+    timing = dict(rm.get("run_timing") or {})
+    if not timing:
+        timing = {"started_at": None, "finished_at": None, "duration_seconds": None}
+    llm_usage = dict(rm.get("llm_usage") or {})
+    _usage_defaults: Dict[str, Any] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "n_requests": 0,
+        "cost_usd": 0.0,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+    }
+    for k, v in _usage_defaults.items():
+        if k not in llm_usage:
+            llm_usage[k] = v
+    raw_sub = dataset_out.get("subset_spec")
+    subset = raw_sub if isinstance(raw_sub, dict) else {}
+    harness = {
+        "max_in_flight": rm.get("max_in_flight"),
+        "suite_seed": suite.seed,
+        "dataset_subset_seed": subset.get("seed"),
+    }
+    return timing, llm_usage, harness
+
+
 def persist_evaluation_run(
     *,
     artifacts_root: Path,
@@ -228,29 +277,20 @@ def persist_evaluation_run(
     if code_version is None:
         code_version = git_code_version()
 
-    run_meta = {
-        "run_id": run_id,
-        "pipeline_mode": suite.pipeline_mode.value,
-        "dataset": dict(dataset),
-        "pipeline_config": {
-            "max_steps": suite.pipeline_cfg.max_steps,
-            "explain": suite.pipeline_cfg.explain,
-            "use_termination_checks": suite.pipeline_cfg.use_termination_checks,
-            "use_final_termination_check": suite.pipeline_cfg.use_final_termination_check,
-        },
-        "seed": suite.seed,
-        "model_specs_by_role": model_specs_by_role_json(suite.model_by_role),
-        "ablation": dict(ablation),
-        "code_version": code_version,
-        "suite_name": suite.name,
-    }
-    (run_dir / "run_meta.json").write_text(
-        json.dumps(run_meta, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    overall_accuracy = suite_report.overall_accuracy
+    example_ids = _ordered_example_ids_from_report(suite_report)
+    dataset_out = dict(dataset)
+    subset_spec = dict(dataset_out.get("subset_spec") or {})
+    subset_spec["example_ids"] = example_ids
+    dataset_out["subset_spec"] = subset_spec
+
+    run_timing, llm_usage, harness = _timing_llm_harness_for_run_meta(
+        suite, suite_report, dataset_out
     )
 
     example_lines: List[str] = []
     failure_lines: List[str] = []
+    failure_counts: Dict[str, int] = {}
     failure_prefix = f"f_{run_id[:16]}"
 
     for task, trep in zip(suite.tasks, suite_report.task_reports):
@@ -305,7 +345,36 @@ def persist_evaluation_run(
                     model_by_role=suite.model_by_role,
                     failure_prefix=failure_prefix,
                 ):
+                    cat = fr.get("failure_category")
+                    if isinstance(cat, str) and cat:
+                        failure_counts[cat] = failure_counts.get(cat, 0) + 1
                     failure_lines.append(json.dumps(fr, ensure_ascii=False))
+
+    run_meta = {
+        "run_id": run_id,
+        "pipeline_mode": suite.pipeline_mode.value,
+        "dataset": dataset_out,
+        "pipeline_config": {
+            "max_steps": suite.pipeline_cfg.max_steps,
+            "explain": suite.pipeline_cfg.explain,
+            "use_termination_checks": suite.pipeline_cfg.use_termination_checks,
+            "use_final_termination_check": suite.pipeline_cfg.use_final_termination_check,
+        },
+        "seed": suite.seed,
+        "model_specs_by_role": model_specs_by_role_json(suite.model_by_role),
+        "ablation": dict(ablation),
+        "code_version": code_version,
+        "suite_name": suite.name,
+        "overall_accuracy": overall_accuracy,
+        "run_timing": run_timing,
+        "llm_usage": llm_usage,
+        "failure_counts_by_category": dict(sorted(failure_counts.items(), key=lambda x: (-x[1], x[0]))),
+        "harness": harness,
+    }
+    (run_dir / "run_meta.json").write_text(
+        json.dumps(run_meta, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
     (run_dir / "examples.jsonl").write_text("\n".join(example_lines) + ("\n" if example_lines else ""), encoding="utf-8")
     if write_failures and failure_lines:
