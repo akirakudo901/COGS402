@@ -551,12 +551,14 @@ class EvaluationSuite:
                 if print_progress:
                     print(f"Completed task {task.task_id}, example {example_id} without exception at: {datetime.now().strftime('%H:%M:%S')}.")
             except Exception as e:
+                import traceback
+                tb_str = traceback.format_exc()
                 outcome, ok = _make_outcome_from_exception(
                     idx=i,
                     example_id=example_id,
                     problem=problem,
                     expected=expected,
-                    exc=e,
+                    exc=Exception(f"{e}\nStack trace:\n{tb_str}"),
                 )
                 if print_progress:
                     print(f"Failed task {task.task_id}, example {example_id} with exception at: {datetime.now().strftime('%H:%M:%S')}.")

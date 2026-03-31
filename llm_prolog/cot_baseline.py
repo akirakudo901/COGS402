@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
@@ -22,6 +22,29 @@ class CoTResult:
     answer_text: str
     reasoning: Optional[str] = None
     model: Optional[str] = None
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "result_type": "CoTResult",
+            "answer_text": self.answer_text,
+            "reasoning": self.reasoning,
+            "model": self.model,
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "CoTResult":
+        if data.get("result_type") != "CoTResult":
+            raise ValueError(f"Expected CoTResult JSON, got result_type={data.get('result_type')!r}")
+        answer_text = data.get("answer_text")
+        reasoning = data.get("reasoning")
+        model = data.get("model")
+        if not isinstance(answer_text, str):
+            raise ValueError("Invalid CoTResult.answer_text")
+        if reasoning is not None and not isinstance(reasoning, str):
+            raise ValueError("Invalid CoTResult.reasoning")
+        if model is not None and not isinstance(model, str):
+            raise ValueError("Invalid CoTResult.model")
+        return CoTResult(answer_text=answer_text, reasoning=reasoning, model=model)
 
 
 def run_cot_baseline(

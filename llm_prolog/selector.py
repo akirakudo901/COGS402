@@ -76,6 +76,86 @@ def select_next_step(
     return _decision_from_data(data)
 
 
+def select_next_step_candidates(
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    llm: LLMClient,
+    failed_steps_context: str = "",
+    *,
+    num_candidates: int = 1,
+    use_termination_checks: bool = True,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
+) -> tuple[TerminationCheckerDecision, List[SelectorDecision]]:
+    """
+    Ask the LLM for N candidate next steps (ordered by likelihood).
+
+    Returns:
+    - A termination-only decision (termination fields filled; selection fields empty)
+    - A list of candidate SelectorDecisions (length <= num_candidates)
+    """
+    if num_candidates <= 1:
+        one = select_next_step(
+            problem=problem,
+            premises=premises,
+            answer_spec=answer_spec,
+            llm=llm,
+            failed_steps_context=failed_steps_context,
+            use_termination_checks=use_termination_checks,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt_override=system_prompt_override,
+        )
+        term_only = _termination_checker_decision_from_data(one.__dict__)
+        return term_only, [one]
+
+    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
+    user_content = (
+        user_content
+        + "\n\n"
+        + "Generate candidates:\n"
+        + f"- Generate exactly {int(num_candidates)} candidates.\n"
+        + "- Each candidate must be distinct from the others.\n"
+    )
+    system_prompt = _build_system_prompt(
+        use_termination_checks=use_termination_checks,
+        system_prompt_override=system_prompt_override,
+    )
+    system_prompt = system_prompt + "\n" + SELECTOR_MULTI_CANDIDATE_SECTION
+
+    data = llm.generate_json(
+        system_prompt,
+        user_content,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+    term_only = _termination_checker_decision_from_data(data)
+    candidates_raw = data.get("candidates", [])
+    if not isinstance(candidates_raw, list):
+        candidates_raw = []
+
+    candidates: List[SelectorDecision] = []
+    for item in candidates_raw:
+        if not isinstance(item, dict):
+            continue
+        cand = _decision_from_data(item)
+        # Ensure termination fields don't interfere with candidate evaluation in the pipeline.
+        cand.is_final_solution = False
+        cand.solution_premise_id = None
+        cand.answer_link_rule = None
+        candidates.append(cand)
+        if len(candidates) >= int(num_candidates):
+            break
+
+    return term_only, candidates
+
+
 def _build_user_content(
     problem: str,
     premises: List[Premise],
@@ -123,7 +203,27 @@ def _decision_from_data(data: Dict[str, Any]) -> SelectorDecision:
 
     is_answer_goal = bool(data.get("is_answer_goal", False))
 
-    # Termination-check fields (computed by the LLM in the same call).
+    termination = _termination_checker_decision_from_data(data)
+
+    # 'should_stop' and 'stop_reason' are filled by the pipeline once we checked the new premise
+    # is a fact uniting with the goal predicate
+    return SelectorDecision(
+        selected_premise_ids=selected_ids_clean,
+        proposed_new_premise=proposed,
+        background_premises=background_clean,
+        is_answer_goal=is_answer_goal,
+        is_final_solution=termination.is_final_solution,
+        solution_premise_id=termination.solution_premise_id,
+        answer_link_rule=termination.answer_link_rule,
+        should_stop=False,
+        stop_reason=None,
+    )
+
+
+def _termination_checker_decision_from_data(data: Dict[str, Any]) -> TerminationCheckerDecision:
+    """
+    Extract termination-check fields from JSON.
+    """
     raw_final_flag = data.get("is_final_solution", False)
     if isinstance(raw_final_flag, bool):
         is_final_solution = raw_final_flag
@@ -151,18 +251,10 @@ def _decision_from_data(data: Dict[str, Any]) -> SelectorDecision:
         solution_premise_id = None
         answer_link_rule = None
 
-    # 'should_stop' and 'stop_reason' are filled by the pipeline once we checked the new premise
-    # is a fact uniting with the goal predicate
-    return SelectorDecision(
-        selected_premise_ids=selected_ids_clean,
-        proposed_new_premise=proposed,
-        background_premises=background_clean,
-        is_answer_goal=is_answer_goal,
+    return TerminationCheckerDecision(
         is_final_solution=is_final_solution,
         solution_premise_id=solution_premise_id,
         answer_link_rule=answer_link_rule,
-        should_stop=False,
-        stop_reason=None,
     )
 
 
@@ -195,6 +287,80 @@ async def select_next_step_async(
         max_tokens=max_tokens,
     )
     return _decision_from_data(data)
+
+
+async def select_next_step_candidates_async(
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    llm_exec: LLMExecutor,
+    failed_steps_context: str = "",
+    *,
+    num_candidates: int = 1,
+    use_termination_checks: bool = True,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
+) -> tuple[TerminationCheckerDecision, List[SelectorDecision]]:
+    """
+    Async version of `select_next_step_candidates`.
+    """
+    if num_candidates <= 1:
+        one = await select_next_step_async(
+            problem=problem,
+            premises=premises,
+            answer_spec=answer_spec,
+            llm_exec=llm_exec,
+            failed_steps_context=failed_steps_context,
+            use_termination_checks=use_termination_checks,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt_override=system_prompt_override,
+        )
+        term_only = _termination_checker_decision_from_data(one.__dict__)
+        return term_only, [one]
+
+    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
+    user_content = (
+        user_content
+        + "\n\n"
+        + "Generate candidates:\n"
+        + f"- Generate exactly {int(num_candidates)} candidates.\n"
+        + "- Each candidate must be distinct from the others.\n"
+    )
+    system_prompt = _build_system_prompt(
+        use_termination_checks=use_termination_checks,
+        system_prompt_override=system_prompt_override,
+    )
+    system_prompt = system_prompt + "\n" + SELECTOR_MULTI_CANDIDATE_SECTION
+
+    data = await llm_exec.generate_json(
+        system_prompt,
+        user_content,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+    term_only = _termination_checker_decision_from_data(data)
+    candidates_raw = data.get("candidates", [])
+    if not isinstance(candidates_raw, list):
+        candidates_raw = []
+
+    candidates: List[SelectorDecision] = []
+    for item in candidates_raw:
+        if not isinstance(item, dict):
+            continue
+        cand = _decision_from_data(item)
+        cand.is_final_solution = False
+        cand.solution_premise_id = None
+        cand.answer_link_rule = None
+        candidates.append(cand)
+        if len(candidates) >= int(num_candidates):
+            break
+    return term_only, candidates
 
 
 def check_termination(
@@ -252,44 +418,6 @@ def _build_termination_checker_user_content(
         "Target answer head predicate:\n"
         f"{answer_spec.target}\n\n"
         "Decide whether termination criteria are met and, if so, propose the linking rule."
-    )
-
-
-def _termination_checker_decision_from_data(data: Dict[str, Any]) -> TerminationCheckerDecision:
-    raw_flag = data.get("is_final_solution", False)
-    if isinstance(raw_flag, bool):
-        is_final_solution = raw_flag
-    elif isinstance(raw_flag, str):
-        is_final_solution = raw_flag.strip().lower() in ("true", "1", "yes", "y")
-    else:
-        is_final_solution = bool(raw_flag)
-
-    solution_id_raw = data.get("solution_premise_id", None)
-    solution_premise_id: Optional[int] = None
-    if solution_id_raw is not None:
-        try:
-            solution_premise_id = int(solution_id_raw)
-        except (TypeError, ValueError):
-            solution_premise_id = None
-
-    rule_raw = data.get("answer_link_rule", None)
-    answer_link_rule: Optional[str] = rule_raw if isinstance(rule_raw, str) else None
-    if answer_link_rule is not None:
-        answer_link_rule = answer_link_rule.strip()
-        if not answer_link_rule:
-            answer_link_rule = None
-
-    if not is_final_solution:
-        return TerminationCheckerDecision(
-            is_final_solution=False,
-            solution_premise_id=None,
-            answer_link_rule=None,
-        )
-
-    return TerminationCheckerDecision(
-        is_final_solution=True,
-        solution_premise_id=solution_premise_id,
-        answer_link_rule=answer_link_rule,
     )
 
 

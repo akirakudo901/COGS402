@@ -63,6 +63,7 @@ EXAMPLE_REQUIRED = (
     "obtained",
     "success",
     "output_summary",
+    "output",
 )
 
 TERMINATION_REQUIRED = (
@@ -256,6 +257,26 @@ def validate_run_dir(run_dir: Path) -> Tuple[bool, List[str]]:
                 osum = row.get("output_summary")
                 if osum is not None and not isinstance(osum, dict):
                     errors.append(f"examples.jsonl row {i}: output_summary must be an object")
+                out = row.get("output")
+                if out is not None and not isinstance(out, dict):
+                    errors.append(f"examples.jsonl row {i}: output must be an object or null")
+                if isinstance(out, dict):
+                    rt = out.get("result_type")
+                    if not isinstance(rt, str) or not rt:
+                        errors.append(f"examples.jsonl row {i}: output.result_type must be a non-empty string")
+                    elif rt == "CoTResult":
+                        if "answer_text" not in out:
+                            errors.append(f"examples.jsonl row {i}: output.CoTResult missing 'answer_text'")
+                        if "reasoning" not in out:
+                            errors.append(f"examples.jsonl row {i}: output.CoTResult missing 'reasoning'")
+                    elif rt == "PipelineResult":
+                        for k in ("success", "steps", "answer_spec", "final_premises"):
+                            if k not in out:
+                                errors.append(f"examples.jsonl row {i}: output.PipelineResult missing key: {k!r}")
+                        if "steps" in out and not isinstance(out.get("steps"), list):
+                            errors.append(f"examples.jsonl row {i}: output.PipelineResult.steps must be a list")
+                        if "final_premises" in out and not isinstance(out.get("final_premises"), list):
+                            errors.append(f"examples.jsonl row {i}: output.PipelineResult.final_premises must be a list")
                 if isinstance(osum, dict) and row.get("validator", "").startswith("gsm8k_main_validator:symbolic_hybrid"):
                     termination = osum.get("termination")
                     if termination is not None and not isinstance(termination, dict):

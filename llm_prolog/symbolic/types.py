@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 import threading
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     from pyswip import Prolog as _PySwipProlog  # type: ignore[reportMissingImports]
@@ -61,6 +61,24 @@ class Term:
             return self.name.strip()
         return f"'{_escape_atom(self.name)}'"
 
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "Term",
+            "name": self.name,
+            "is_variable": self.is_variable,
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "Term":
+        t = data.get("type")
+        if t != "Term":
+            raise ValueError(f"Expected Term JSON object, got type={t!r}")
+        name = data.get("name")
+        is_variable = data.get("is_variable")
+        if not isinstance(name, str) or not isinstance(is_variable, bool):
+            raise ValueError("Invalid Term JSON fields")
+        return Term(name=name, is_variable=is_variable)
+
 
 PredicateArg = Union[Term, "Predicate"]
 
@@ -85,6 +103,41 @@ class Predicate:
         args = ", ".join(t.to_prolog_text() for t in self.args)
         return f"{self.name}({args})"
 
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "Predicate",
+            "name": self.name,
+            "args": [
+                a.to_json_dict()
+                for a in self.args
+            ],
+        }
+
+    @classmethod
+    def from_json_dict(cls, data: Dict[str, Any]) -> "Predicate":
+        t = data.get("type")
+        if t != "Predicate":
+            raise ValueError(f"Expected Predicate JSON object, got type={t!r}")
+        name = data.get("name")
+        if not isinstance(name, str):
+            raise ValueError("Invalid Predicate.name")
+        raw_args = data.get("args")
+        if not isinstance(raw_args, list):
+            raise ValueError("Invalid Predicate.args")
+
+        args: List[PredicateArg] = []
+        for a in raw_args:
+            if not isinstance(a, dict):
+                raise ValueError("Invalid PredicateArg JSON element (not an object)")
+            at = a.get("type")
+            if at == "Term":
+                args.append(Term.from_json_dict(a))
+            elif at == "Predicate":
+                args.append(Predicate.from_json_dict(a))
+            else:
+                raise ValueError(f"Unknown PredicateArg type: {at!r}")
+        return Predicate(name=name, args=tuple(args))
+
 
 @dataclass(frozen=True)
 class Fact:
@@ -98,6 +151,21 @@ class Fact:
     
     def to_prolog_text(self) -> str:
         return self.predicate.to_prolog_text()
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "Fact",
+            "predicate": self.predicate.to_json_dict(),
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "Fact":
+        if data.get("type") != "Fact":
+            raise ValueError(f"Expected Fact JSON object, got type={data.get('type')!r}")
+        pred = data.get("predicate")
+        if not isinstance(pred, dict):
+            raise ValueError("Invalid Fact.predicate")
+        return Fact(predicate=Predicate.from_json_dict(pred))
 
 
 @dataclass(frozen=True)
@@ -118,8 +186,48 @@ class Rule:
         body = ", ".join(p.to_prolog_text() for p in self.body)
         return f"{self.head.to_prolog_text()} :- {body}"
 
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "Rule",
+            "head": self.head.to_json_dict(),
+            "body": [p.to_json_dict() for p in self.body],
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "Rule":
+        if data.get("type") != "Rule":
+            raise ValueError(f"Expected Rule JSON object, got type={data.get('type')!r}")
+        head_raw = data.get("head")
+        body_raw = data.get("body")
+        if not isinstance(head_raw, dict) or not isinstance(body_raw, list):
+            raise ValueError("Invalid Rule JSON fields")
+        head = Predicate.from_json_dict(head_raw)
+        body: List[Predicate] = []
+        for p in body_raw:
+            if not isinstance(p, dict):
+                raise ValueError("Invalid Rule.body element")
+            body.append(Predicate.from_json_dict(p))
+        return Rule(head=head, body=tuple(body))
+
 
 Clause = Union[Fact, Rule]
+
+
+def clause_to_json_dict(clause: Clause) -> Dict[str, Any]:
+    if isinstance(clause, Fact):
+        return clause.to_json_dict()
+    if isinstance(clause, Rule):
+        return clause.to_json_dict()
+    raise TypeError(f"Unsupported clause type: {type(clause)}")
+
+
+def clause_from_json_dict(data: Dict[str, Any]) -> Clause:
+    ctype = data.get("type")
+    if ctype == "Fact":
+        return Fact.from_json_dict(data)
+    if ctype == "Rule":
+        return Rule.from_json_dict(data)
+    raise ValueError(f"Unknown Clause JSON type: {ctype!r}")
 
 
 @dataclass
@@ -165,6 +273,47 @@ class Premise:
         if self.source and level >= 3 and level != 4:
             lines.append(f"  Source: {self.source}")
         return "\n".join(lines)
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "Premise",
+            "id": self.id,
+            "nl": self.nl,
+            "source": self.source,
+            "parent_ids": self.parent_ids,
+            "clause": clause_to_json_dict(self.clause),
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "Premise":
+        if data.get("type") != "Premise":
+            raise ValueError(f"Expected Premise JSON object, got type={data.get('type')!r}")
+        pid = data.get("id")
+        if not isinstance(pid, int):
+            raise ValueError("Invalid Premise.id")
+        nl = data.get("nl")
+        if nl is not None and not isinstance(nl, str):
+            raise ValueError("Invalid Premise.nl")
+        source = data.get("source")
+        if source is not None and not isinstance(source, str):
+            raise ValueError("Invalid Premise.source")
+        parent_ids = data.get("parent_ids")
+        if parent_ids is not None and not isinstance(parent_ids, list):
+            raise ValueError("Invalid Premise.parent_ids")
+        clause_raw = data.get("clause")
+        if not isinstance(clause_raw, dict):
+            raise ValueError("Invalid Premise.clause")
+        clause = clause_from_json_dict(clause_raw)
+        parsed_parents = None
+        if parent_ids is not None:
+            parsed_parents = [int(x) for x in parent_ids]
+        return Premise(
+            id=pid,
+            clause=clause,
+            nl=nl,
+            source=source,
+            parent_ids=parsed_parents,
+        )
 
 
 @dataclass(frozen=True)
@@ -229,6 +378,21 @@ class AnswerSpec:
             f"'{self.variable_name}' in '{self.target}'"
         )
 
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "AnswerSpec",
+            "target": self.target.to_json_dict(),
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "AnswerSpec":
+        if data.get("type") != "AnswerSpec":
+            raise ValueError(f"Expected AnswerSpec JSON object, got type={data.get('type')!r}")
+        target_raw = data.get("target")
+        if not isinstance(target_raw, dict):
+            raise ValueError("Invalid AnswerSpec.target")
+        return AnswerSpec(target=Predicate.from_json_dict(target_raw))
+
 
 @dataclass
 class SelectorDecision:
@@ -278,6 +442,47 @@ class SelectorDecision:
         if self.should_stop and self.stop_reason:
             lines.append(f"  Decided we must stop because: {self.stop_reason}")
         return "\n".join(lines)
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "SelectorDecision",
+            "selected_premise_ids": self.selected_premise_ids,
+            "proposed_new_premise": self.proposed_new_premise,
+            "background_premises": self.background_premises,
+            "is_answer_goal": self.is_answer_goal,
+            "should_stop": self.should_stop,
+            "is_final_solution": self.is_final_solution,
+            "solution_premise_id": self.solution_premise_id,
+            "answer_link_rule": self.answer_link_rule,
+            "stop_reason": self.stop_reason,
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "SelectorDecision":
+        if data.get("type") != "SelectorDecision":
+            raise ValueError(f"Expected SelectorDecision JSON object, got type={data.get('type')!r}")
+
+        def _opt_str(x: Any) -> Optional[str]:
+            return x if isinstance(x, str) else None
+
+        selected = data.get("selected_premise_ids")
+        if not isinstance(selected, list):
+            raise ValueError("Invalid SelectorDecision.selected_premise_ids")
+        selected_ids = [int(x) for x in selected]
+
+        return SelectorDecision(
+            selected_premise_ids=selected_ids,
+            proposed_new_premise=_opt_str(data.get("proposed_new_premise")),
+            background_premises=[str(x) for x in data.get("background_premises", [])]
+            if isinstance(data.get("background_premises", []), list)
+            else [],
+            is_answer_goal=bool(data.get("is_answer_goal", False)),
+            should_stop=bool(data.get("should_stop", False)),
+            is_final_solution=bool(data.get("is_final_solution", False)),
+            solution_premise_id=(int(data["solution_premise_id"]) if isinstance(data.get("solution_premise_id"), int) else None),
+            answer_link_rule=_opt_str(data.get("answer_link_rule")),
+            stop_reason=_opt_str(data.get("stop_reason")),
+        )
 
 
 def _failed_step_groups_in_order(steps: List["PipelineStep"]) -> Dict[str, List["PipelineStep"]]:
@@ -384,6 +589,35 @@ class PipelineStep:
             f"Proposed='{self.decision.proposed_new_premise}'."
         )
 
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "PipelineStep",
+            "step_index": self.step_index,
+            "used_premise_ids": self.used_premise_ids,
+            "new_premise": self.new_premise.to_json_dict() if self.new_premise is not None else None,
+            "decision": self.decision.to_json_dict(),
+            "success": self.success,
+            "note": self.note,
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "PipelineStep":
+        if data.get("type") != "PipelineStep":
+            raise ValueError(f"Expected PipelineStep JSON object, got type={data.get('type')!r}")
+        new_premise_raw = data.get("new_premise")
+        new_premise = Premise.from_json_dict(new_premise_raw) if isinstance(new_premise_raw, dict) else None
+        decision_raw = data.get("decision")
+        if not isinstance(decision_raw, dict):
+            raise ValueError("Invalid PipelineStep.decision")
+        return PipelineStep(
+            step_index=int(data.get("step_index")),
+            used_premise_ids=[int(x) for x in data.get("used_premise_ids", [])] if isinstance(data.get("used_premise_ids", []), list) else [],
+            new_premise=new_premise,
+            decision=SelectorDecision.from_json_dict(decision_raw),
+            success=bool(data.get("success", False)),
+            note=data.get("note") if isinstance(data.get("note"), str) else None,
+        )
+
 
 @dataclass
 class PipelineResult:
@@ -470,6 +704,45 @@ class PipelineResult:
         if bound is None or bound.is_variable:
             return None
         return bound.name
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        return {
+            "result_type": "PipelineResult",
+            "success": self.success,
+            "answer_premise": self.answer_premise.to_json_dict() if self.answer_premise is not None else None,
+            "steps": [s.to_json_dict() for s in self.steps],
+            "answer_spec": self.answer_spec.to_json_dict(),
+            "final_premises": [p.to_json_dict() for p in self.final_premises],
+            "reason": self.reason,
+        }
+
+    @staticmethod
+    def from_json_dict(data: Dict[str, Any]) -> "PipelineResult":
+        if data.get("result_type") != "PipelineResult":
+            raise ValueError(f"Expected PipelineResult JSON, got result_type={data.get('result_type')!r}")
+        ans_prem_raw = data.get("answer_premise")
+        ans_prem = Premise.from_json_dict(ans_prem_raw) if isinstance(ans_prem_raw, dict) else None
+        steps_raw = data.get("steps")
+        if not isinstance(steps_raw, list):
+            raise ValueError("Invalid PipelineResult.steps")
+        steps = [PipelineStep.from_json_dict(s) for s in steps_raw]
+        answer_spec_raw = data.get("answer_spec")
+        if not isinstance(answer_spec_raw, dict):
+            raise ValueError("Invalid PipelineResult.answer_spec")
+        answer_spec = AnswerSpec.from_json_dict(answer_spec_raw)
+        finals_raw = data.get("final_premises")
+        if not isinstance(finals_raw, list):
+            raise ValueError("Invalid PipelineResult.final_premises")
+        final_premises = [Premise.from_json_dict(p) for p in finals_raw]
+        reason = data.get("reason") if isinstance(data.get("reason"), str) else None
+        return PipelineResult(
+            success=bool(data.get("success", False)),
+            answer_premise=ans_prem,
+            steps=steps,
+            answer_spec=answer_spec,
+            final_premises=final_premises,
+            reason=reason,
+        )
 
 def extract_premise_derivation_dict(
     result: PipelineResult,
