@@ -12,22 +12,8 @@ from typing import Any, Dict, List
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
 from .symbolic.types import Premise, format_clause
+from .system_prompts import SYMBOL_TO_NL_SYSTEM_PROMPT
 
-
-SYSTEM_PROMPT = """
-You are a logic tutor.
-
-You receive:
-- A natural language problem (the full description including the question or goal).
-- A list of Prolog‑style clauses with IDs.
-
-For each clause, provide a short, precise natural‑language explanation of
-what it states, suitable for a reasoning trace. Be concrete and focus on
-quantities and relationships, not on Prolog syntax.
-
-Output MUST be a single JSON object with:
-- "explanations": an object mapping string IDs to explanation strings.
-"""
 
 
 def _render_premises(premises: List[Premise]) -> str:
@@ -52,7 +38,7 @@ def symbols_to_nl(
     Ask the LLM to paraphrase each symbolic premise into NL.
     """
     user_content = _build_user_content(problem, premises)
-    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    system_prompt = system_prompt_override or SYMBOL_TO_NL_SYSTEM_PROMPT
     data = llm.generate_json(
         system_prompt,
         user_content,
@@ -102,7 +88,7 @@ async def symbols_to_nl_async(
     Async version: ask the LLM to paraphrase each symbolic premise into NL via LLMExecutor.
     """
     user_content = _build_user_content(problem, premises)
-    system_prompt = system_prompt_override or SYSTEM_PROMPT
+    system_prompt = system_prompt_override or SYMBOL_TO_NL_SYSTEM_PROMPT
     data = await llm_exec.generate_json(
         system_prompt,
         user_content,
