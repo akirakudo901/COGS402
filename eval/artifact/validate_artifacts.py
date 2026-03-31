@@ -53,6 +53,7 @@ PIPELINE_CONFIG_REQUIRED = (
     "explain",
     "use_termination_checks",
     "use_final_termination_check",
+    "allow_background_premises",
 )
 
 EXAMPLE_REQUIRED = (
