@@ -20,7 +20,13 @@ from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
 from .cot_baseline import run_cot_baseline, run_cot_baseline_async
 from .nl_symbol_converter import convert_problem_to_symbols, convert_problem_to_symbols_async
-from .selector import check_termination, check_termination_async, select_next_step, select_next_step_async
+from .selector import (
+    TerminationCheckerDecision,
+    check_termination,
+    check_termination_async,
+    select_next_step_candidates,
+    select_next_step_candidates_async,
+)
 from .symbolic.inference import infer_new_premise, unify_predicates, validate_inference_premise_selection
 from .symbolic.types import (
     AnswerSpec,
@@ -39,6 +45,7 @@ class PipelineConfig:
     explain: bool = True
     use_termination_checks: bool = False
     use_final_termination_check: bool = True
+    selector_num_candidates: int = 1
 
 
 @dataclass
@@ -199,7 +206,7 @@ def _is_ground_fact(premise: Premise) -> bool:
 def _handle_termination_decision_common(
     *,
     premises: List[Premise],
-    decision: Any,
+    decision: TerminationCheckerDecision | SelectorDecision,
     answer_spec: AnswerSpec,
     rule_source: str = "termination_checker",
 ) -> tuple[bool, Optional[Premise], Optional[Premise], Optional[str]]:
@@ -452,12 +459,13 @@ def _run_symbolic_steps(
 
     iterator = step_iter if step_iter is not None else tqdm(range(pipeline_cfg.max_steps))
     for step_idx in iterator:
-        decision: SelectorDecision = select_next_step(
+        term_decision, candidates = select_next_step_candidates(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
             llm=llm,
             failed_steps_context=FailedStep.format_grouped_for_selector(failed_steps),
+            num_candidates=max(1, int(pipeline_cfg.selector_num_candidates)),
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -470,7 +478,7 @@ def _run_symbolic_steps(
             should_stop, inferred_answer_premise, proposed_rule_premise, stop_reason = (
                 _handle_termination_decision_common(
                     premises=premises,
-                    decision=decision,
+                    decision=term_decision,
                     answer_spec=answer_spec,
                 )
             )
@@ -487,7 +495,7 @@ def _run_symbolic_steps(
                     should_stop=False,
                     stop_reason=None,
                 )
-                used_ids = [decision.solution_premise_id] if decision.solution_premise_id is not None else []
+                used_ids = [term_decision.solution_premise_id] if term_decision.solution_premise_id is not None else []
                 steps.append(
                     PipelineStep(
                         step_index=step_idx,
@@ -503,21 +511,52 @@ def _run_symbolic_steps(
                 reason = stop_reason
                 break
 
-        # 2) If termination didn't verify, run the selector's inference.
-        premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
-            step_idx=step_idx,
-            premises=premises,
-            answer_spec=answer_spec,
-            decision=decision,
-            used_premise_sets=used_premise_sets,
-        )
-        steps.append(step)
-        if failed_step is not None:
-            failed_steps.append(failed_step)
+        # 2) If termination didn't verify, try candidates in order until one succeeds.
+        chosen_step: Optional[PipelineStep] = None
+        for cand in candidates:
+            premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
+                step_idx=step_idx,
+                premises=premises,
+                answer_spec=answer_spec,
+                decision=cand,
+                used_premise_sets=used_premise_sets,
+            )
+            if failed_step is not None:
+                failed_steps.append(failed_step)
+            if step.success:
+                chosen_step = step
+                break
+            chosen_step = step
 
-        if step.new_premise is not None and _answer_matches(step.new_premise, answer_spec):
+        if chosen_step is None:
+            # Defensive fallback: no candidate produced.
+            chosen_step = PipelineStep(
+                step_index=step_idx,
+                used_premise_ids=[],
+                new_premise=None,
+                decision=SelectorDecision(
+                    selected_premise_ids=[],
+                    proposed_new_premise=None,
+                    background_premises=[],
+                    is_answer_goal=False,
+                    should_stop=False,
+                ),
+                success=False,
+                note="Selector produced no candidates; skipping inference.",
+            )
+            failed_steps.append(
+                FailedStep.from_attempt(
+                    proposed_premise=None,
+                    combined_premise_ids=[],
+                    note="Selector produced no candidates; skipping inference.",
+                )
+            )
+
+        steps.append(chosen_step)
+
+        if chosen_step.new_premise is not None and _answer_matches(chosen_step.new_premise, answer_spec):
             success = True
-            final_answer = step.new_premise
+            final_answer = chosen_step.new_premise
             reason = "answer_head_matched"
             break
 
@@ -581,12 +620,13 @@ async def _run_symbolic_steps_async(
 
     iterator = step_iter if step_iter is not None else range(pipeline_cfg.max_steps)
     for step_idx in iterator:
-        decision: SelectorDecision = await select_next_step_async(
+        term_decision, candidates = await select_next_step_candidates_async(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
             llm_exec=llm_exec,
             failed_steps_context=FailedStep.format_grouped_for_selector(failed_steps),
+            num_candidates=max(1, int(pipeline_cfg.selector_num_candidates)),
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -599,7 +639,7 @@ async def _run_symbolic_steps_async(
             should_stop, inferred_answer_premise, proposed_rule_premise, stop_reason = (
                 _handle_termination_decision_common(
                     premises=premises,
-                    decision=decision,
+                    decision=term_decision,
                     answer_spec=answer_spec,
                 )
             )
@@ -616,7 +656,7 @@ async def _run_symbolic_steps_async(
                     should_stop=False,
                     stop_reason=None,
                 )
-                used_ids = [decision.solution_premise_id] if decision.solution_premise_id is not None else []
+                used_ids = [term_decision.solution_premise_id] if term_decision.solution_premise_id is not None else []
                 steps.append(
                     PipelineStep(
                         step_index=step_idx,
@@ -632,21 +672,51 @@ async def _run_symbolic_steps_async(
                 reason = stop_reason
                 break
 
-        # 2) If termination didn't verify, run the selector's inference.
-        premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
-            step_idx=step_idx,
-            premises=premises,
-            answer_spec=answer_spec,
-            decision=decision,
-            used_premise_sets=used_premise_sets,
-        )
-        steps.append(step)
-        if failed_step is not None:
-            failed_steps.append(failed_step)
+        # 2) If termination didn't verify, try candidates in order until one succeeds.
+        chosen_step: Optional[PipelineStep] = None
+        for cand in candidates:
+            premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
+                step_idx=step_idx,
+                premises=premises,
+                answer_spec=answer_spec,
+                decision=cand,
+                used_premise_sets=used_premise_sets,
+            )
+            if failed_step is not None:
+                failed_steps.append(failed_step)
+            if step.success:
+                chosen_step = step
+                break
+            chosen_step = step
 
-        if step.new_premise is not None and _answer_matches(step.new_premise, answer_spec):
+        if chosen_step is None:
+            chosen_step = PipelineStep(
+                step_index=step_idx,
+                used_premise_ids=[],
+                new_premise=None,
+                decision=SelectorDecision(
+                    selected_premise_ids=[],
+                    proposed_new_premise=None,
+                    background_premises=[],
+                    is_answer_goal=False,
+                    should_stop=False,
+                ),
+                success=False,
+                note="Selector produced no candidates; skipping inference.",
+            )
+            failed_steps.append(
+                FailedStep.from_attempt(
+                    proposed_premise=None,
+                    combined_premise_ids=[],
+                    note="Selector produced no candidates; skipping inference.",
+                )
+            )
+
+        steps.append(chosen_step)
+
+        if chosen_step.new_premise is not None and _answer_matches(chosen_step.new_premise, answer_spec):
             success = True
-            final_answer = step.new_premise
+            final_answer = chosen_step.new_premise
             reason = "answer_head_matched"
             break
 
