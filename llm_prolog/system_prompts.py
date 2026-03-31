@@ -212,20 +212,47 @@ Rules:
 - Do not add a trailing period to the rule string.
 """
 
+SELECTOR_MULTI_CANDIDATE_SECTION = """
+- Generate multiple distinct candidate next steps in decreasing order of likelihood.
+- Each candidate represents ONE planned inference attempt and must include:
+  - "proposed_new_premise": a premise you intend to derive (string; must be new among existing premises)
+  - "is_answer_goal": boolean (true if this premise is directly the answer head goal)
+  - "background_premises": optional list of facts/rules (strings) ending with a period
+  - "selected_rule_id": integer ID of exactly ONE consumer rule
+  - "selected_fact_ids": ordered list of integer IDs of ONE OR MORE producers
+- Each candidate MUST be distinct from all others (not the same exact combination of the above fields).
 
-def _build_selector_system_prompt(*, use_termination_checks: bool) -> str:
+If generating multiple candidates, output MUST be a single JSON object with:
+- "candidates": a list of candidate objects, ordered by likelihood (best first).
+"""
+
+
+def _build_selector_system_prompt(
+    *, 
+    use_termination_checks: bool, 
+    allow_background_premises: bool,
+    select_multiple_candidates: bool
+    ) -> str:
     """
     Build selector system prompt for the default (no override) case.
     """
     intro = SYSTEM_PROMPT_INTRO
     termination_desc = TERMINATION_CHECK_SECTION
-    selector_main = SELECTOR_MAIN_SECTION
+    selector_main = SELECTOR_MAIN_SECTION if allow_background_premises else SELECTOR_MAIN_SECTION_NO_BACKGROUND
     termination_json = TERMINATION_CHECK_JSON_SECTION
-    selector_json = SELECTOR_JSON_SECTION
+    selector_json = SELECTOR_JSON_SECTION if allow_background_premises else SELECTOR_JSON_SECTION_NO_BACKGROUND
+    multi_candidate = SELECTOR_MULTI_CANDIDATE_SECTION
 
     if use_termination_checks:
-        return intro + termination_desc + selector_main + termination_json + selector_json
-    return intro + selector_main + selector_json
+        sections = [
+          intro, termination_desc, selector_main, 
+          termination_json, selector_json
+          ]
+    else:
+        sections = [intro, selector_main, selector_json]
+    if select_multiple_candidates:
+        sections.append(multi_candidate)
+    return "\n".join(sections)
 
 
 COT_SOLVER_SYSTEM_PROMPT = (
@@ -274,10 +301,44 @@ def _build_wei_table20_math_word_problem_prompt(problem: str) -> str:
 
 
 SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS = _build_selector_system_prompt(
-    use_termination_checks=False
+    use_termination_checks=False,
+    allow_background_premises=True,
+    select_multiple_candidates=False
 )
 SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS = _build_selector_system_prompt(
-    use_termination_checks=True
+    use_termination_checks=True,
+    allow_background_premises=True,
+    select_multiple_candidates=False
+)
+SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS_NO_BACKGROUND = _build_selector_system_prompt(
+    use_termination_checks=False,
+    allow_background_premises=False,
+    select_multiple_candidates=False
+)
+SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS_NO_BACKGROUND = _build_selector_system_prompt(
+    use_termination_checks=True,
+    allow_background_premises=False,
+    select_multiple_candidates=False
+)
+SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS_MULTI_CANDIDATE = _build_selector_system_prompt(
+    use_termination_checks=False,
+    allow_background_premises=True,
+    select_multiple_candidates=True
+)
+SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS_MULTI_CANDIDATE = _build_selector_system_prompt(
+    use_termination_checks=True,
+    allow_background_premises=True,
+    select_multiple_candidates=True
+)
+SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS_NO_BACKGROUND_MULTI_CANDIDATE = _build_selector_system_prompt(
+    use_termination_checks=False,
+    allow_background_premises=False,
+    select_multiple_candidates=True
+)
+SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS_NO_BACKGROUND_MULTI_CANDIDATE = _build_selector_system_prompt(
+    use_termination_checks=True,
+    allow_background_premises=False,
+    select_multiple_candidates=True
 )
 
 
@@ -285,6 +346,12 @@ SYSTEM_PROMPTS_BY_NAME: Dict[str, str] = {
     "nl_to_symbol": NL_TO_SYMBOL_SYSTEM_PROMPT,
     "selector_no_termination_checks": SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS,
     "selector_with_termination_checks": SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS,
+    "selector_no_termination_checks_no_background": SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS_NO_BACKGROUND,
+    "selector_with_termination_checks_no_background": SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS_NO_BACKGROUND,
+    "selector_no_termination_checks_multi_candidate": SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS_MULTI_CANDIDATE, 
+    "selector_with_termination_checks_multi_candidate": SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS_MULTI_CANDIDATE, 
+    "selector_no_termination_checks_no_background_multi_candidate": SELECTOR_SYSTEM_PROMPT_NO_TERMINATION_CHECKS_NO_BACKGROUND_MULTI_CANDIDATE, 
+    "selector_with_termination_checks_no_background_multi_candidate": SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS_NO_BACKGROUND_MULTI_CANDIDATE,
     "symbol_to_nl": SYMBOL_TO_NL_SYSTEM_PROMPT,
     "final_termination_check": TERMINATION_CHECK_SYSTEM_PROMPT,
     "cot_solver_plain": COT_SOLVER_SYSTEM_PROMPT,

@@ -46,6 +46,7 @@ class PipelineConfig:
     use_termination_checks: bool = False
     use_final_termination_check: bool = True
     selector_num_candidates: int = 1
+    allow_background_premises: bool = True
 
 
 @dataclass
@@ -277,6 +278,7 @@ def _process_symbolic_decision_step(
     answer_spec: AnswerSpec,
     decision: SelectorDecision,
     used_premise_sets: Set[FrozenSet[int]],
+    allow_background_premises: bool,
 ) -> Tuple[List[Premise], Optional[Premise], PipelineStep, bool, Optional[str], Optional[FailedStep]]:
     """
     Apply one selector decision to the symbolic state.
@@ -288,7 +290,7 @@ def _process_symbolic_decision_step(
     - should_stop (break loop)
     - reason (if should_stop)
     """
-    if decision.background_premises:
+    if allow_background_premises and decision.background_premises:
         premises = _append_background_premises(premises, decision.background_premises)
 
     if len(decision.selected_premise_ids) < 2:
@@ -471,6 +473,7 @@ def _run_symbolic_steps(
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
             use_termination_checks=pipeline_cfg.use_termination_checks,
+            allow_background_premises=pipeline_cfg.allow_background_premises,
         )
 
         if pipeline_cfg.use_termination_checks:
@@ -514,12 +517,15 @@ def _run_symbolic_steps(
         # 2) If termination didn't verify, try candidates in order until one succeeds.
         chosen_step: Optional[PipelineStep] = None
         for cand in candidates:
+            if not pipeline_cfg.allow_background_premises:
+                cand.background_premises = []
             premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
                 step_idx=step_idx,
                 premises=premises,
                 answer_spec=answer_spec,
                 decision=cand,
                 used_premise_sets=used_premise_sets,
+                allow_background_premises=pipeline_cfg.allow_background_premises,
             )
             if failed_step is not None:
                 failed_steps.append(failed_step)
@@ -632,6 +638,7 @@ async def _run_symbolic_steps_async(
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
             use_termination_checks=pipeline_cfg.use_termination_checks,
+            allow_background_premises=pipeline_cfg.allow_background_premises,
         )
 
         if pipeline_cfg.use_termination_checks:
@@ -675,12 +682,15 @@ async def _run_symbolic_steps_async(
         # 2) If termination didn't verify, try candidates in order until one succeeds.
         chosen_step: Optional[PipelineStep] = None
         for cand in candidates:
+            if not pipeline_cfg.allow_background_premises:
+                cand.background_premises = []
             premises, _, step, _, _, failed_step = _process_symbolic_decision_step(
                 step_idx=step_idx,
                 premises=premises,
                 answer_spec=answer_spec,
                 decision=cand,
                 used_premise_sets=used_premise_sets,
+                allow_background_premises=pipeline_cfg.allow_background_premises,
             )
             if failed_step is not None:
                 failed_steps.append(failed_step)
