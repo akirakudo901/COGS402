@@ -5,7 +5,10 @@ The script where the actual evaluation occurs.
 from typing import Optional, Sequence
 
 import asyncio
+from pathlib import Path
 
+from eval.artifact import new_run_id, persist_evaluation_run
+from eval.artifact.validate_artifacts import validate_run_dir
 from llm_prolog.pipeline import PipelineConfig
 
 from eval.eval_suite import (
@@ -25,6 +28,53 @@ from eval.per_dataset.eval_gsm8k import (
 
 def spec_to_name(spec : ModelSpec) -> str:
     return spec.model.split("/")[-1]
+
+
+def run_symbolic_hybrid_evaluation(
+    suite: EvaluationSuite,
+    *,
+    artifacts_root: Path,
+    variant_id: str,
+    dataset_meta: dict,
+    ablation_overrides: dict | None = None,
+    write_failures: bool = True,
+    max_in_flight: int = 15,
+) -> Path:
+    """
+    Run a symbolic-hybrid EvaluationSuite, persist artifacts, validate them,
+    and return the run directory path.
+    """
+    report = asyncio.run(
+        suite.run_async(
+            max_in_flight=max_in_flight,
+            print_progress=True,
+            show_openrouter_balance=True,
+        )
+    )
+
+    run_id = new_run_id()
+    run_dir = persist_evaluation_run(
+        artifacts_root=artifacts_root.resolve(),
+        run_id=run_id,
+        suite=suite,
+        suite_report=report,
+        dataset=dataset_meta,
+        ablation={
+            "variant_id": variant_id,
+            "component_overrides": ablation_overrides or {},
+        },
+        write_failures=write_failures,
+    )
+    print(f"Artifacts written to: {run_dir}")
+
+    ok, errs = validate_run_dir(run_dir)
+    if not ok:
+        for err in errs:
+            print(f"[artifact validation] {err}")
+        raise RuntimeError(f"Artifact validation failed for run directory: {run_dir}")
+    print("Artifact validation passed.")
+    return report, run_dir
+
 
 def get_gsm8K_eval_task(
     size : Optional[int] = None, 
@@ -159,10 +209,29 @@ if __name__ == "__main__":
     #################
     # RUN OF CHOICE #
     #################
-    suites_of_choice = multi_suite3
+    suites_of_choice = multi_suite1
+    ARTIFACTS_DIR = Path("artifacts")
+    VARIANT_ID = "symbolic_hybrid_manual"
+    NO_FAILURES = False
 
     for s in suites_of_choice:
         print("~"*50)
         print(s.get_description())
-        report = asyncio.run(s.run_async(max_in_flight=15, print_progress=True, show_openrouter_balance=True))
+        task = s.tasks[0]
+        task_id = task.task_id if isinstance(task, SimpleEvalTask) else "unknown_task"
+        split = "train" if ":train" in task_id else "test" if ":test" in task_id else "unknown"
+        dataset_meta = {
+            "name": "gsm8k",
+            "split": split,
+            "subset_spec": {"task_id": task_id},
+        }
+        report, _ = run_symbolic_hybrid_evaluation(
+            suite=s,
+            artifacts_root=ARTIFACTS_DIR,
+            variant_id=VARIANT_ID,
+            dataset_meta=dataset_meta,
+            ablation_overrides={},
+            write_failures=not NO_FAILURES,
+            max_in_flight=15,
+        )
         print(report)
