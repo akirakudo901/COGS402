@@ -15,27 +15,27 @@ from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
 from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premises
 from .system_prompts import (
-    SELECTOR_JSON_SECTION,
-    SELECTOR_MAIN_SECTION,
-    SYSTEM_PROMPT_INTRO,
-    TERMINATION_CHECK_JSON_SECTION,
-    TERMINATION_CHECK_SECTION,
-    TERMINATION_CHECK_SYSTEM_PROMPT,
+    _build_selector_system_prompt,
+    TERMINATION_CHECK_SYSTEM_PROMPT
 )
 
 
-def _build_system_prompt(*, use_termination_checks: bool, system_prompt_override: str | None) -> str:
-    intro = SYSTEM_PROMPT_INTRO
-    termination_desc = TERMINATION_CHECK_SECTION
-    selector_main = SELECTOR_MAIN_SECTION
-    termination_json = TERMINATION_CHECK_JSON_SECTION
-    selector_json = SELECTOR_JSON_SECTION
-
+def _build_system_prompt(
+    *,
+    use_termination_checks: bool,
+    allow_background_premises: bool,
+    select_multiple_candidates: bool,
+    system_prompt_override: str | None,
+) -> str:
     if system_prompt_override:
         return system_prompt_override
-    if use_termination_checks:
-        return (intro + termination_desc + selector_main + termination_json + selector_json)
-    return (intro + selector_main + selector_json)
+    else:
+        return _build_selector_system_prompt(
+            use_termination_checks=use_termination_checks, 
+            allow_background_premises=allow_background_premises,
+            select_multiple_candidates=select_multiple_candidates
+            )
+
 
 
 @dataclass
@@ -53,6 +53,7 @@ def select_next_step(
     failed_steps_context: str = "",
     *,
     use_termination_checks: bool = True,
+    allow_background_premises: bool = True,
     model: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
@@ -64,6 +65,8 @@ def select_next_step(
     user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     system_prompt = _build_system_prompt(
         use_termination_checks=use_termination_checks,
+        allow_background_premises=allow_background_premises,
+        select_multiple_candidates=False,
         system_prompt_override=system_prompt_override,
     )
     data = llm.generate_json(
@@ -85,6 +88,7 @@ def select_next_step_candidates(
     *,
     num_candidates: int = 1,
     use_termination_checks: bool = True,
+    allow_background_premises: bool = True,
     model: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
@@ -105,6 +109,7 @@ def select_next_step_candidates(
             llm=llm,
             failed_steps_context=failed_steps_context,
             use_termination_checks=use_termination_checks,
+            allow_background_premises=allow_background_premises,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -118,14 +123,15 @@ def select_next_step_candidates(
         user_content
         + "\n\n"
         + "Generate candidates:\n"
-        + f"- Generate exactly {int(num_candidates)} candidates.\n"
+        + f"- Generate exactly {int(num_candidates)} candidate(s).\n"
         + "- Each candidate must be distinct from the others.\n"
     )
     system_prompt = _build_system_prompt(
         use_termination_checks=use_termination_checks,
+        allow_background_premises=allow_background_premises,
+        select_multiple_candidates=True,
         system_prompt_override=system_prompt_override,
     )
-    system_prompt = system_prompt + "\n" + SELECTOR_MULTI_CANDIDATE_SECTION
 
     data = llm.generate_json(
         system_prompt,
@@ -266,6 +272,7 @@ async def select_next_step_async(
     failed_steps_context: str = "",
     *,
     use_termination_checks: bool = True,
+    allow_background_premises: bool = True,
     model: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
@@ -277,6 +284,8 @@ async def select_next_step_async(
     user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     system_prompt = _build_system_prompt(
         use_termination_checks=use_termination_checks,
+        allow_background_premises=allow_background_premises,
+        select_multiple_candidates=False,
         system_prompt_override=system_prompt_override,
     )
     data = await llm_exec.generate_json(
@@ -298,6 +307,7 @@ async def select_next_step_candidates_async(
     *,
     num_candidates: int = 1,
     use_termination_checks: bool = True,
+    allow_background_premises: bool = True,
     model: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
@@ -314,6 +324,7 @@ async def select_next_step_candidates_async(
             llm_exec=llm_exec,
             failed_steps_context=failed_steps_context,
             use_termination_checks=use_termination_checks,
+                allow_background_premises=allow_background_premises,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -327,14 +338,15 @@ async def select_next_step_candidates_async(
         user_content
         + "\n\n"
         + "Generate candidates:\n"
-        + f"- Generate exactly {int(num_candidates)} candidates.\n"
+        + f"- Generate exactly {int(num_candidates)} candidate(s).\n"
         + "- Each candidate must be distinct from the others.\n"
     )
     system_prompt = _build_system_prompt(
         use_termination_checks=use_termination_checks,
+        allow_background_premises=allow_background_premises,
+        select_multiple_candidates=True,
         system_prompt_override=system_prompt_override,
     )
-    system_prompt = system_prompt + "\n" + SELECTOR_MULTI_CANDIDATE_SECTION
 
     data = await llm_exec.generate_json(
         system_prompt,

@@ -161,6 +161,10 @@ def _system_prompts_used_by_role(
                 cname = "selector_with_termination_checks"
             else:
                 cname = "selector_no_termination_checks"
+            if not suite.pipeline_cfg.allow_background_premises:
+                cname += "_no_background"
+            if suite.pipeline_cfg.selector_num_candidates > 1:
+                cname += "_multi_candidate"
             _maybe_add_used_prompt_entry(
                 used_roles["selector"],
                 component="selector_select_next_step",
@@ -589,6 +593,7 @@ def persist_evaluation_run(
             "explain": suite.pipeline_cfg.explain,
             "use_termination_checks": suite.pipeline_cfg.use_termination_checks,
             "use_final_termination_check": suite.pipeline_cfg.use_final_termination_check,
+            "allow_background_premises": suite.pipeline_cfg.allow_background_premises,
         },
         "seed": suite.seed,
         "model_specs_by_role": model_specs_by_role_json(suite.model_by_role),
