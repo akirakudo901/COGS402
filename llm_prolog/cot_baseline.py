@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
