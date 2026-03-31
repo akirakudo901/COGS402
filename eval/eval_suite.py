@@ -11,8 +11,9 @@ See 'brainstorming', 'eval_suite_plan.md' for more details.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import (
     Any,
@@ -181,6 +182,8 @@ class TaskReport:
 class SuiteReport:
     pipeline_mode: PipelineMode
     task_reports: Tuple[TaskReport, ...]
+    # Optional: populated by EvaluationSuite.run / run_async (timing, llm_usage, max_in_flight).
+    run_metadata: Optional[Mapping[str, Any]] = None
 
     @property
     def overall_accuracy(self) -> float:
@@ -428,7 +431,10 @@ class EvaluationSuite:
         Run all tasks sequentially. If show_openrouter_balance is True, print
         the Openrouter balance before and after, and the credit used.
         """
+        wall0 = time.perf_counter()
+        started_at = datetime.now(timezone.utc).isoformat()
         client = self._make_llm_client()
+        client.reset_usage_stats()
         if show_openrouter_balance:
             balance_before = self._print_openrouter_balance_before(client)
         runner = self._runner(llm=client)
@@ -437,7 +443,22 @@ class EvaluationSuite:
             reports.append(self.run_task(task, runner=runner))
         if show_openrouter_balance:
             self._print_openrouter_balance_after(client, balance_before)
-        return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
+        finished_at = datetime.now(timezone.utc).isoformat()
+        duration_s = time.perf_counter() - wall0
+        run_metadata: Dict[str, Any] = {
+            "run_timing": {
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "duration_seconds": round(duration_s, 6),
+            },
+            "llm_usage": client.get_usage_stats(),
+            "max_in_flight": 1,
+        }
+        return SuiteReport(
+            pipeline_mode=self.pipeline_mode,
+            task_reports=tuple(reports),
+            run_metadata=run_metadata,
+        )
 
     async def run_async(
         self,
@@ -450,7 +471,10 @@ class EvaluationSuite:
         Uses one shared AsyncLLMClient and LLMExecutor per suite run.
         If show_openrouter_balance is True, print balance before and after, and used credit.
         """
+        wall0 = time.perf_counter()
+        started_at = datetime.now(timezone.utc).isoformat()
         async with AsyncLLMClient() as client:
+            client.reset_usage_stats()
             if show_openrouter_balance:
                 balance_before = self._print_openrouter_balance_before(client)
 
@@ -462,9 +486,25 @@ class EvaluationSuite:
                 )
                 reports.append(report)
             
+            llm_usage = client.get_usage_stats()
             if show_openrouter_balance:
                 self._print_openrouter_balance_after(client, balance_before)
-        return SuiteReport(pipeline_mode=self.pipeline_mode, task_reports=tuple(reports))
+        finished_at = datetime.now(timezone.utc).isoformat()
+        duration_s = time.perf_counter() - wall0
+        run_metadata: Dict[str, Any] = {
+            "run_timing": {
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "duration_seconds": round(duration_s, 6),
+            },
+            "llm_usage": llm_usage,
+            "max_in_flight": max_in_flight,
+        }
+        return SuiteReport(
+            pipeline_mode=self.pipeline_mode,
+            task_reports=tuple(reports),
+            run_metadata=run_metadata,
+        )
 
     async def run_task_async(
         self,

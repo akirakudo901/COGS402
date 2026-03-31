@@ -72,7 +72,9 @@ class AsyncLLMClient(BaseLLMClient):
             json=payload,
         )
         resp.raise_for_status()
-        return resp.json()
+        body = resp.json()
+        self._accumulate_usage_from_response(body)
+        return body
 
     async def generate(
         self,

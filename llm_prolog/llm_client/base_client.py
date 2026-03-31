@@ -48,7 +48,60 @@ class BaseLLMClient:
 
     def __init__(self, config: Optional[OpenRouterConfig] = None) -> None:
         self.config = config or load_openrouter_config()
-    
+        self._init_usage_stats()
+
+    def _init_usage_stats(self) -> None:
+        self._usage_totals: Dict[str, Any] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "n_requests": 0,
+            "cost_usd": 0.0,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+
+    def reset_usage_stats(self) -> None:
+        """Reset counters for a new evaluation run (sync or async client)."""
+        self._init_usage_stats()
+
+    def get_usage_stats(self) -> Dict[str, Any]:
+        """Cumulative usage from API responses (OpenRouter-style `usage` + optional cost)."""
+        return dict(self._usage_totals)
+
+    def _accumulate_usage_from_response(self, data: Dict[str, Any]) -> None:
+        """Parse one chat-completions JSON body; safe no-op if `usage` is absent."""
+        self._usage_totals["n_requests"] += 1
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                val = usage.get(key)
+                if isinstance(val, int):
+                    self._usage_totals[key] += val
+            comp_det = usage.get("completion_tokens_details")
+            if isinstance(comp_det, dict):
+                rt = comp_det.get("reasoning_tokens")
+                if isinstance(rt, int):
+                    self._usage_totals["reasoning_tokens"] += rt
+            prompt_det = usage.get("prompt_tokens_details")
+            if isinstance(prompt_det, dict):
+                for key in ("cached_tokens", "cache_write_tokens"):
+                    v = prompt_det.get(key)
+                    if isinstance(v, int):
+                        self._usage_totals[key] += v
+        cost_val = None
+        if isinstance(usage, dict):
+            cost_val = usage.get("cost")
+            if cost_val is None:
+                cost_val = usage.get("total_cost")
+        if cost_val is None:
+            cost_val = data.get("cost")
+        if cost_val is None:
+            cost_val = data.get("total_cost")
+        if isinstance(cost_val, (int, float)):
+            self._usage_totals["cost_usd"] = float(self._usage_totals["cost_usd"]) + float(cost_val)
+
     def new_conversation(self, system_prompt: str) -> Conversation:
         """Create a reusable conversation handle."""
         return Conversation(system_prompt=system_prompt)
