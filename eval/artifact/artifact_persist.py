@@ -92,20 +92,24 @@ def _maybe_add_used_prompt_entry(
     component: str,
     prompt_name: str,
     prompt_text: str,
+    used_prompt_texts_by_hash: Optional[Dict[str, str]] = None,
 ) -> None:
+    prompt_hash = hash_system_prompt_text(prompt_text)
     entries.append(
         {
             "component": component,
             "prompt_name": prompt_name,
-            "prompt_hash": hash_system_prompt_text(prompt_text),
+            "prompt_hash": prompt_hash,
         }
     )
+    if used_prompt_texts_by_hash is not None:
+        used_prompt_texts_by_hash[prompt_hash] = prompt_text
 
 
 def _system_prompts_used_by_role(
     *,
     suite: EvaluationSuite
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
     """
     Compute which system prompts were used for each role/model in this suite run.
 
@@ -116,6 +120,7 @@ def _system_prompts_used_by_role(
     prompt_overrides = suite.prompt_overrides or {}
 
     used_roles: Dict[str, List[Dict[str, Any]]] = {}
+    used_prompt_texts_by_hash: Dict[str, str] = {}
     required_roles = [r.value for r in suite.pipeline_mode.get_required_roles()]
     for rr in required_roles:
         used_roles[rr] = []
@@ -130,6 +135,7 @@ def _system_prompts_used_by_role(
                 component="nl_to_symbol",
                 prompt_name="override:nl_to_symbol",
                 prompt_text=nl_override,
+                used_prompt_texts_by_hash=used_prompt_texts_by_hash,
             )
         else:
             _maybe_add_used_prompt_entry(
@@ -137,6 +143,7 @@ def _system_prompts_used_by_role(
                 component="nl_to_symbol",
                 prompt_name="nl_to_symbol",
                 prompt_text=SYSTEM_PROMPTS_BY_NAME["nl_to_symbol"],
+                used_prompt_texts_by_hash=used_prompt_texts_by_hash,
             )
 
         # selector (select_next_step)
@@ -147,6 +154,7 @@ def _system_prompts_used_by_role(
                 component="selector_select_next_step",
                 prompt_name="override:selector",
                 prompt_text=selector_override,
+                used_prompt_texts_by_hash=used_prompt_texts_by_hash,
             )
         else:
             if suite.pipeline_cfg.use_termination_checks:
@@ -158,6 +166,7 @@ def _system_prompts_used_by_role(
                 component="selector_select_next_step",
                 prompt_name=cname,
                 prompt_text=SYSTEM_PROMPTS_BY_NAME[cname],
+                used_prompt_texts_by_hash=used_prompt_texts_by_hash,
             )
 
         # selector (final termination-check)
@@ -168,6 +177,7 @@ def _system_prompts_used_by_role(
                     component="final_termination_check",
                     prompt_name="override:selector",
                     prompt_text=selector_override,
+                    used_prompt_texts_by_hash=used_prompt_texts_by_hash,
                 )
             else:
                 _maybe_add_used_prompt_entry(
@@ -175,6 +185,7 @@ def _system_prompts_used_by_role(
                     component="final_termination_check",
                     prompt_name="final_termination_check",
                     prompt_text=SYSTEM_PROMPTS_BY_NAME["final_termination_check"],
+                    used_prompt_texts_by_hash=used_prompt_texts_by_hash,
                 )
 
         # symbol_to_nl (only if explain is enabled)
@@ -186,6 +197,7 @@ def _system_prompts_used_by_role(
                     component="symbol_to_nl",
                     prompt_name="override:symbol_to_nl",
                     prompt_text=sym2nl_override,
+                    used_prompt_texts_by_hash=used_prompt_texts_by_hash,
                 )
             else:
                 _maybe_add_used_prompt_entry(
@@ -193,6 +205,7 @@ def _system_prompts_used_by_role(
                     component="symbol_to_nl",
                     prompt_name="symbol_to_nl",
                     prompt_text=SYSTEM_PROMPTS_BY_NAME["symbol_to_nl"],
+                    used_prompt_texts_by_hash=used_prompt_texts_by_hash,
                 )
 
     elif suite.pipeline_mode == PipelineMode.COT_BASELINE:
@@ -204,6 +217,7 @@ def _system_prompts_used_by_role(
                 component="cot_solver",
                 prompt_name="override:cot_solver",
                 prompt_text=cot_override,
+                used_prompt_texts_by_hash=used_prompt_texts_by_hash,
             )
         else:
             COT_PROMPT_NAME = "cot_solver_fewshot"
@@ -212,9 +226,10 @@ def _system_prompts_used_by_role(
                 component="cot_solver",
                 prompt_name=COT_PROMPT_NAME,
                 prompt_text=SYSTEM_PROMPTS_BY_NAME[COT_PROMPT_NAME],
+                used_prompt_texts_by_hash=used_prompt_texts_by_hash,
             )
 
-    return used_roles
+    return used_roles, used_prompt_texts_by_hash
 
 
 def model_specs_by_role_json(model_by_role: ModelMapping) -> Dict[str, Dict[str, Any]]:
@@ -562,6 +577,9 @@ def persist_evaluation_run(
                         failure_counts[cat] = failure_counts.get(cat, 0) + 1
                     failure_lines.append(json.dumps(fr, ensure_ascii=False))
 
+    system_prompts_used_by_role, system_prompts_used_content_by_hash = _system_prompts_used_by_role(
+        suite=suite
+    )
     run_meta = {
         "run_id": run_id,
         "pipeline_mode": suite.pipeline_mode.value,
@@ -582,10 +600,11 @@ def persist_evaluation_run(
         "llm_usage": llm_usage,
         "failure_counts_by_category": dict(sorted(failure_counts.items(), key=lambda x: (-x[1], x[0]))),
         "harness": harness,
-        "system_prompts_hashes_by_canonical_name": dict(SYSTEM_PROMPT_HASHES_BY_NAME),
-        "system_prompts_used_by_role": _system_prompts_used_by_role(
-            suite=suite
-        ),
+        "system_prompts_hashes_by_canonical_name": {
+            h: name for name, h in SYSTEM_PROMPT_HASHES_BY_NAME.items()
+        },
+        "system_prompts_used_by_role": system_prompts_used_by_role,
+        "system_prompts_used_content_by_hash": system_prompts_used_content_by_hash,
     }
     (run_dir / "run_meta.json").write_text(
         json.dumps(run_meta, indent=2, ensure_ascii=False) + "\n",

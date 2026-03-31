@@ -177,20 +177,42 @@ def validate_run_dir(run_dir: Path) -> Tuple[bool, List[str]]:
         if not isinstance(sp_hashes, dict):
             errors.append("run_meta.json key 'system_prompts_hashes_by_canonical_name' must be an object")
         else:
-            for name, h in sp_hashes.items():
-                if not isinstance(name, str):
+            for h, name in sp_hashes.items():
+                if not isinstance(h, str):
                     errors.append(
                         "run_meta.json.system_prompts_hashes_by_canonical_name keys must be strings"
                     )
                     break
-                if not isinstance(h, str):
+                if not isinstance(name, str):
                     errors.append(
-                        f"run_meta.json.system_prompts_hashes_by_canonical_name[{name!r}] must be a string"
+                        f"run_meta.json.system_prompts_hashes_by_canonical_name[{h!r}] must be a string"
                     )
                     break
                 if len(h) != 64:
                     errors.append(
-                        f"run_meta.json.system_prompts_hashes_by_canonical_name[{name!r}] must look like sha256 hex"
+                        f"run_meta.json.system_prompts_hashes_by_canonical_name[{h!r}] must look like sha256 hex"
+                    )
+                    break
+
+    sp_texts = meta.get("system_prompts_used_content_by_hash")
+    if sp_texts is not None:
+        if not isinstance(sp_texts, dict):
+            errors.append("run_meta.json key 'system_prompts_used_content_by_hash' must be an object")
+        else:
+            for h, text in sp_texts.items():
+                if not isinstance(h, str):
+                    errors.append(
+                        "run_meta.json.system_prompts_used_content_by_hash keys must be strings"
+                    )
+                    break
+                if len(h) != 64:
+                    errors.append(
+                        f"run_meta.json.system_prompts_used_content_by_hash[{h!r}] must look like sha256 hex"
+                    )
+                    break
+                if not isinstance(text, str):
+                    errors.append(
+                        f"run_meta.json.system_prompts_used_content_by_hash[{h!r}] must be a string"
                     )
                     break
 
