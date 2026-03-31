@@ -246,6 +246,71 @@ def validate_run_dir(run_dir: Path) -> Tuple[bool, List[str]]:
                             f"run_meta.json.system_prompts_used_by_role[{role!r}][{i}].prompt_hash must look like sha256 hex"
                         )
 
+    actual_examples = meta.get("actual_prompts_and_answers")
+    if actual_examples is not None:
+        if not isinstance(actual_examples, dict):
+            errors.append("run_meta.json key 'actual_prompts_and_answers' must be an object")
+        else:
+            item = actual_examples.get("cot_single_step_example")
+            if item is not None:
+                if not isinstance(item, dict):
+                    errors.append(
+                        "run_meta.json.actual_prompts_and_answers['cot_single_step_example'] must be an object or null"
+                    )
+                else:
+                    for f in ("component", "example_id", "system_prompt", "user_prompt", "answer"):
+                        if f not in item:
+                            errors.append(
+                                f"run_meta.json.actual_prompts_and_answers['cot_single_step_example'] missing key: {f!r}"
+                            )
+                    for f in ("component", "example_id", "system_prompt", "user_prompt", "answer"):
+                        v = item.get(f)
+                        if v is not None and not isinstance(v, str):
+                            errors.append(
+                                "run_meta.json.actual_prompts_and_answers['cot_single_step_example']."
+                                f"{f} must be a string or null"
+                            )
+
+    hybrid_samples = meta.get("symbolic_hybrid_llm_call_samples")
+    if hybrid_samples is not None:
+        if not isinstance(hybrid_samples, dict):
+            errors.append("run_meta.json key 'symbolic_hybrid_llm_call_samples' must be an object or null")
+        else:
+            if "example_id" not in hybrid_samples:
+                errors.append("run_meta.json.symbolic_hybrid_llm_call_samples missing key: 'example_id'")
+            elif not isinstance(hybrid_samples.get("example_id"), str):
+                errors.append("run_meta.json.symbolic_hybrid_llm_call_samples.example_id must be a string")
+            for sub in (
+                "nl_to_symbol",
+                "selector_latest_step",
+                "final_termination_check",
+                "symbol_to_nl",
+            ):
+                ent = hybrid_samples.get(sub)
+                if ent is None:
+                    continue
+                if not isinstance(ent, dict):
+                    errors.append(
+                        f"run_meta.json.symbolic_hybrid_llm_call_samples[{sub!r}] must be an object or null"
+                    )
+                    continue
+                for f in ("example_id", "component", "system_prompt", "user_prompt", "answer", "parsed_answer"):
+                    if f not in ent:
+                        errors.append(
+                            f"run_meta.json.symbolic_hybrid_llm_call_samples[{sub!r}] missing key: {f!r}"
+                        )
+                for f in ("example_id", "component", "system_prompt", "user_prompt", "answer"):
+                    v = ent.get(f)
+                    if v is not None and not isinstance(v, str):
+                        errors.append(
+                            f"run_meta.json.symbolic_hybrid_llm_call_samples[{sub!r}].{f} must be a string or null"
+                        )
+                si = ent.get("step_index")
+                if si is not None and not isinstance(si, int):
+                    errors.append(
+                        f"run_meta.json.symbolic_hybrid_llm_call_samples[{sub!r}].step_index must be an integer or null"
+                    )
+
     ds = meta.get("dataset")
     if isinstance(ds, dict):
         spec = ds.get("subset_spec")
