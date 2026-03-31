@@ -457,6 +457,7 @@ def persist_evaluation_run(
     )
 
     example_lines: List[str] = []
+    readable_example_lines: List[str] = []
     failure_lines: List[str] = []
     failure_counts: Dict[str, int] = {}
     failure_prefix = f"f_{run_id[:16]}"
@@ -521,6 +522,33 @@ def persist_evaluation_run(
             rec["output"] = output_payload
             example_lines.append(json.dumps(rec, ensure_ascii=False))
 
+            if suite.pipeline_mode == PipelineMode.COT_BASELINE:
+                # Store a readable rendering of the CoTResult object.
+                # CoTResult doesn't have a custom __str__; render explicitly.
+                readable_example_lines.append(f"=== example_id={outcome.example_id!r} ===")
+                readable_example_lines.append(f"problem: {outcome.problem!r}")
+                readable_example_lines.append(
+                    f"ground_truth: {ground_truth!r} | "
+                    f"obtained: {obtained!r} | "
+                    f"success: {success!r}"
+                    )
+                if outcome.result is None:
+                    readable_example_lines.append("result: None")
+                else:
+                    answer_text = getattr(outcome.result, "answer_text", None)
+                    reasoning = getattr(outcome.result, "reasoning", None)
+                    model = getattr(outcome.result, "model", None)
+                    readable_example_lines.append(
+                        "result: CoTResult | "
+                        f"model: {model!r}"
+                        )
+                    readable_example_lines.append(f"answer_text: {answer_text!r}")
+                    if reasoning is not None and isinstance(reasoning, str) and "\n" in reasoning:
+                        readable_example_lines.append("reasoning:")
+                        readable_example_lines.extend([f"  {line}" for line in reasoning.splitlines()])
+                    else:
+                        readable_example_lines.append(f"reasoning: {reasoning}")
+
             if write_failures:
                 for fr in _failure_rows_for_outcome(
                     outcome=outcome,
@@ -565,6 +593,15 @@ def persist_evaluation_run(
     )
 
     (run_dir / "examples.jsonl").write_text("\n".join(example_lines) + ("\n" if example_lines else ""), encoding="utf-8")
+    if suite.pipeline_mode != PipelineMode.COT_BASELINE:
+        # For symbolic hybrid (PipelineResult), rely on SuiteReport's
+        # formatting instead of manually calling PipelineResult.__str__.
+        readable_example_lines = str(suite_report).splitlines()
+    if readable_example_lines:
+        (run_dir / "readable_examples.txt").write_text(
+            "\n".join(readable_example_lines) + "\n",
+            encoding="utf-8",
+        )
     if write_failures and failure_lines:
         (run_dir / "failures.jsonl").write_text("\n".join(failure_lines) + "\n", encoding="utf-8")
 
