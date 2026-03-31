@@ -22,6 +22,7 @@ class CoTResult:
     answer_text: str
     reasoning: Optional[str] = None
     model: Optional[str] = None
+    llm_interaction: Optional[Dict[str, Any]] = None
 
     def to_json_dict(self) -> Dict[str, Any]:
         return {
@@ -29,6 +30,7 @@ class CoTResult:
             "answer_text": self.answer_text,
             "reasoning": self.reasoning,
             "model": self.model,
+            "llm_interaction": self.llm_interaction,
         }
 
     @staticmethod
@@ -38,13 +40,21 @@ class CoTResult:
         answer_text = data.get("answer_text")
         reasoning = data.get("reasoning")
         model = data.get("model")
+        llm_interaction = data.get("llm_interaction")
         if not isinstance(answer_text, str):
             raise ValueError("Invalid CoTResult.answer_text")
         if reasoning is not None and not isinstance(reasoning, str):
             raise ValueError("Invalid CoTResult.reasoning")
         if model is not None and not isinstance(model, str):
             raise ValueError("Invalid CoTResult.model")
-        return CoTResult(answer_text=answer_text, reasoning=reasoning, model=model)
+        if llm_interaction is not None and not isinstance(llm_interaction, dict):
+            raise ValueError("Invalid CoTResult.llm_interaction")
+        return CoTResult(
+            answer_text=answer_text,
+            reasoning=reasoning,
+            model=model,
+            llm_interaction=llm_interaction,
+        )
 
 
 def run_cot_baseline(
@@ -72,10 +82,24 @@ def run_cot_baseline(
         temperature=getattr(model_spec, "temperature", None) if model_spec else None,
         max_tokens=getattr(model_spec, "max_tokens", None) if model_spec else None,
     )
-    return _cot_result_from_raw(raw, model_spec)
+    return _cot_result_from_raw(
+        raw,
+        model_spec,
+        llm_interaction={
+            "component": "cot_solver",
+            "system_prompt": system_prompt,
+            "user_prompt": user_content,
+            "raw_answer": raw,
+        },
+    )
 
 
-def _cot_result_from_raw(raw: str, model_spec: Any | None) -> CoTResult:
+def _cot_result_from_raw(
+    raw: str,
+    model_spec: Any | None,
+    *,
+    llm_interaction: Optional[Dict[str, Any]] = None,
+) -> CoTResult:
     answer_text = raw.strip()
 
     # Backwards compatible parsing for older prompts.
@@ -106,6 +130,7 @@ def _cot_result_from_raw(raw: str, model_spec: Any | None) -> CoTResult:
         answer_text=answer_text,
         reasoning=raw,
         model=getattr(model_spec, "model", None) if model_spec else None,
+        llm_interaction=llm_interaction,
     )
 
 
@@ -128,4 +153,13 @@ async def run_cot_baseline_async(
         temperature=getattr(model_spec, "temperature", None) if model_spec else None,
         max_tokens=getattr(model_spec, "max_tokens", None) if model_spec else None,
     )
-    return _cot_result_from_raw(raw, model_spec)
+    return _cot_result_from_raw(
+        raw,
+        model_spec,
+        llm_interaction={
+            "component": "cot_solver",
+            "system_prompt": system_prompt,
+            "user_prompt": user_content,
+            "raw_answer": raw,
+        },
+    )

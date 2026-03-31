@@ -7,7 +7,7 @@ non-blocking I/O. Use a single client instance per run for connection pooling.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 
@@ -106,7 +106,8 @@ class AsyncLLMClient(BaseLLMClient):
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-    ) -> Any:
+        return_raw: bool = False,
+    ) -> Union[Any, Tuple[Any, str]]:
         """
         Ask the model to return a single JSON object and parse it (async).
         """
@@ -118,7 +119,7 @@ class AsyncLLMClient(BaseLLMClient):
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return self._parse_json_response(raw)
+        return self._parse_json_response_with_optional_raw(raw, return_raw=return_raw)
     
     async def continue_conversation(
         self,

@@ -451,6 +451,7 @@ def _run_symbolic_steps(
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
     step_iter: Optional[Iterable[int]] = None,
+    llm_interactions: Optional[List[dict[str, Any]]] = None,
 ) -> tuple[bool, Optional[Premise], List[PipelineStep], Optional[str]]:
     steps: List[PipelineStep] = []
     success = False
@@ -461,7 +462,7 @@ def _run_symbolic_steps(
 
     iterator = step_iter if step_iter is not None else tqdm(range(pipeline_cfg.max_steps))
     for step_idx in iterator:
-        term_decision, candidates = select_next_step_candidates(
+        term_decision, candidates, selector_trace = select_next_step_candidates(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
@@ -475,6 +476,8 @@ def _run_symbolic_steps(
             use_termination_checks=pipeline_cfg.use_termination_checks,
             allow_background_premises=pipeline_cfg.allow_background_premises,
         )
+        if llm_interactions is not None:
+            llm_interactions.append({"step_index": step_idx, **selector_trace})
 
         if pipeline_cfg.use_termination_checks:
             # 1) Termination check first (single LLM call already returned its conclusion).
@@ -579,11 +582,12 @@ def _try_final_termination_check_sync(
     temperature: float | None,
     max_tokens: int | None,
     system_prompt_override: str | None,
+    llm_interactions: Optional[List[dict[str, Any]]] = None,
 ) -> tuple[bool, Optional[Premise], Optional[Premise], Optional[str], Optional[int]]:
     """
     Separate termination-check LLM call used only after max-steps exhaustion.
     """
-    decision = check_termination(
+    decision, trace = check_termination(
         problem=problem,
         premises=premises,
         answer_spec=answer_spec,
@@ -594,6 +598,8 @@ def _try_final_termination_check_sync(
         max_tokens=max_tokens,
         system_prompt_override=system_prompt_override,
     )
+    if llm_interactions is not None:
+        llm_interactions.append(trace)
     should_stop, inferred_answer, proposed_rule, reason = _handle_termination_decision_common(
         premises=premises,
         decision=decision,
@@ -616,6 +622,7 @@ async def _run_symbolic_steps_async(
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
     step_iter: Optional[Iterable[int]] = None,
+    llm_interactions: Optional[List[dict[str, Any]]] = None,
 ) -> tuple[bool, Optional[Premise], List[PipelineStep], Optional[str]]:
     steps: List[PipelineStep] = []
     success = False
@@ -626,7 +633,7 @@ async def _run_symbolic_steps_async(
 
     iterator = step_iter if step_iter is not None else range(pipeline_cfg.max_steps)
     for step_idx in iterator:
-        term_decision, candidates = await select_next_step_candidates_async(
+        term_decision, candidates, selector_trace = await select_next_step_candidates_async(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
@@ -640,6 +647,8 @@ async def _run_symbolic_steps_async(
             use_termination_checks=pipeline_cfg.use_termination_checks,
             allow_background_premises=pipeline_cfg.allow_background_premises,
         )
+        if llm_interactions is not None:
+            llm_interactions.append({"step_index": step_idx, **selector_trace})
 
         if pipeline_cfg.use_termination_checks:
             # 1) Termination check first (single LLM call already returned its conclusion).
@@ -743,11 +752,12 @@ async def _try_final_termination_check_async(
     temperature: float | None,
     max_tokens: int | None,
     system_prompt_override: str | None,
+    llm_interactions: Optional[List[dict[str, Any]]] = None,
 ) -> tuple[bool, Optional[Premise], Optional[Premise], Optional[str], Optional[int]]:
     """
     Async separate termination-check LLM call used only after max-steps exhaustion.
     """
-    decision = await check_termination_async(
+    decision, trace = await check_termination_async(
         problem=problem,
         premises=premises,
         answer_spec=answer_spec,
@@ -758,6 +768,8 @@ async def _try_final_termination_check_async(
         max_tokens=max_tokens,
         system_prompt_override=system_prompt_override,
     )
+    if llm_interactions is not None:
+        llm_interactions.append(trace)
     should_stop, inferred_answer, proposed_rule, reason = _handle_termination_decision_common(
         premises=premises,
         decision=decision,
@@ -787,8 +799,9 @@ def run_symbolic_hybrid_pipeline(
     If roles aren't specified, we fall back to the LLMClient's model & config.
     """
 
+    llm_interactions: List[dict[str, Any]] = []
     nl2sym = _get_model_spec(model_by_role, "nl_to_symbol")
-    premises, answer_spec = convert_problem_to_symbols(
+    premises, answer_spec, nl2sym_trace = convert_problem_to_symbols(
         problem,
         llm,
         model=getattr(nl2sym, "model", None) if nl2sym else None,
@@ -796,6 +809,7 @@ def run_symbolic_hybrid_pipeline(
         max_tokens=getattr(nl2sym, "max_tokens", None) if nl2sym else None,
         system_prompt_override=_get_prompt_override(prompt_overrides, "nl_to_symbol"),
     )
+    llm_interactions.append(nl2sym_trace)
 
     sel_spec = _get_model_spec(model_by_role, "selector")
     success, final_answer, steps, reason = _run_symbolic_steps(
@@ -808,6 +822,7 @@ def run_symbolic_hybrid_pipeline(
         temperature=getattr(sel_spec, "temperature", None) if sel_spec else None,
         max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
         system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
+        llm_interactions=llm_interactions,
     )
 
     if (
@@ -825,6 +840,7 @@ def run_symbolic_hybrid_pipeline(
                 temperature=getattr(sel_spec, "temperature", None) if sel_spec else None,
                 max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
                 system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
+                llm_interactions=llm_interactions,
             )
         )
         if final_chk_ok and final_chk_answer is not None and final_chk_rule is not None:
@@ -860,7 +876,7 @@ def run_symbolic_hybrid_pipeline(
     if pipeline_cfg.explain:
         sym2nl = _get_model_spec(model_by_role, "symbol_to_nl")
         try:
-            explanations = symbols_to_nl(
+            explanations, sym2nl_trace = symbols_to_nl(
                 problem,
                 premises,
                 llm,
@@ -869,6 +885,7 @@ def run_symbolic_hybrid_pipeline(
                 max_tokens=getattr(sym2nl, "max_tokens", None) if sym2nl else None,
                 system_prompt_override=_get_prompt_override(prompt_overrides, "symbol_to_nl"),
             )
+            llm_interactions.append(sym2nl_trace)
             _apply_explanations_to_premises(premises, explanations)
         except Exception:
             pass
@@ -880,6 +897,7 @@ def run_symbolic_hybrid_pipeline(
         answer_spec=answer_spec,
         final_premises=premises,
         reason=reason,
+        llm_interactions=llm_interactions,
     )
 
 
@@ -894,8 +912,9 @@ async def run_symbolic_hybrid_pipeline_async(
     """
     Async symbolic hybrid pipeline; all LLM calls go through LLMExecutor.
     """
+    llm_interactions: List[dict[str, Any]] = []
     nl2sym = _get_model_spec(model_by_role, "nl_to_symbol")
-    premises, answer_spec = await convert_problem_to_symbols_async(
+    premises, answer_spec, nl2sym_trace = await convert_problem_to_symbols_async(
         problem,
         llm_exec,
         model=getattr(nl2sym, "model", None) if nl2sym else None,
@@ -903,6 +922,7 @@ async def run_symbolic_hybrid_pipeline_async(
         max_tokens=getattr(nl2sym, "max_tokens", None) if nl2sym else None,
         system_prompt_override=_get_prompt_override(prompt_overrides, "nl_to_symbol"),
     )
+    llm_interactions.append(nl2sym_trace)
 
     sel_spec = _get_model_spec(model_by_role, "selector")
     success, final_answer, steps, reason = await _run_symbolic_steps_async(
@@ -915,6 +935,7 @@ async def run_symbolic_hybrid_pipeline_async(
         temperature=getattr(sel_spec, "temperature", None) if sel_spec else None,
         max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
         system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
+        llm_interactions=llm_interactions,
     )
 
     if (
@@ -932,6 +953,7 @@ async def run_symbolic_hybrid_pipeline_async(
                 temperature=getattr(sel_spec, "temperature", None) if sel_spec else None,
                 max_tokens=getattr(sel_spec, "max_tokens", None) if sel_spec else None,
                 system_prompt_override=_get_prompt_override(prompt_overrides, "selector"),
+                llm_interactions=llm_interactions,
             )
         )
         if final_chk_ok and final_chk_answer is not None and final_chk_rule is not None:
@@ -967,7 +989,7 @@ async def run_symbolic_hybrid_pipeline_async(
     if pipeline_cfg.explain:
         sym2nl = _get_model_spec(model_by_role, "symbol_to_nl")
         try:
-            explanations = await symbols_to_nl_async(
+            explanations, sym2nl_trace = await symbols_to_nl_async(
                 problem,
                 premises,
                 llm_exec,
@@ -976,6 +998,7 @@ async def run_symbolic_hybrid_pipeline_async(
                 max_tokens=getattr(sym2nl, "max_tokens", None) if sym2nl else None,
                 system_prompt_override=_get_prompt_override(prompt_overrides, "symbol_to_nl"),
             )
+            llm_interactions.append(sym2nl_trace)
             _apply_explanations_to_premises(premises, explanations)
         except Exception:
             pass
@@ -987,6 +1010,7 @@ async def run_symbolic_hybrid_pipeline_async(
         answer_spec=answer_spec,
         final_premises=premises,
         reason=reason,
+        llm_interactions=llm_interactions,
     )
 
 

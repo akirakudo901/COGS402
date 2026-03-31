@@ -443,6 +443,114 @@ def _timing_llm_harness_for_run_meta(
     return timing, llm_usage, harness
 
 
+def _pack_hybrid_trace(
+    trace: Optional[Dict[str, Any]],
+    example_id: str,
+    *,
+    step_index: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    if trace is None:
+        return None
+    row: Dict[str, Any] = {
+        "example_id": example_id,
+        "component": trace.get("component"),
+        "system_prompt": trace.get("system_prompt"),
+        "user_prompt": trace.get("user_prompt"),
+        "answer": trace.get("raw_answer"),
+        "parsed_answer": trace.get("parsed_answer"),
+    }
+    if step_index is not None:
+        row["step_index"] = step_index
+    return row
+
+
+def _symbolic_hybrid_llm_call_samples_for_run(
+    *,
+    suite: EvaluationSuite,
+    suite_report: SuiteReport,
+) -> Optional[Dict[str, Any]]:
+    """
+    One successful symbolic-hybrid example: nl_to_symbol, latest selector step,
+    final termination check (if any), symbol_to_nl (if recorded).
+    """
+    if suite.pipeline_mode != PipelineMode.SYMBOLIC_HYBRID:
+        return None
+
+    for trep in suite_report.task_reports:
+        for outcome in trep.outcomes:
+            if not outcome.correct or not isinstance(outcome.result, PipelineResult):
+                continue
+            interactions = getattr(outcome.result, "llm_interactions", None)
+            if not isinstance(interactions, list) or not interactions:
+                continue
+
+            nl_trace: Optional[Dict[str, Any]] = None
+            latest_sel: Optional[Dict[str, Any]] = None
+            max_step: Optional[int] = None
+            final_tc: Optional[Dict[str, Any]] = None
+            sym2nl_trace: Optional[Dict[str, Any]] = None
+
+            for it_w in interactions:
+                if not isinstance(it_w, dict):
+                    continue
+                comp = it_w.get("component")
+                if comp == "nl_to_symbol" and nl_trace is None:
+                    nl_trace = it_w
+                elif comp == "selector_select_next_step":
+                    si = it_w.get("step_index")
+                    try:
+                        si_val = int(si)
+                    except (TypeError, ValueError):
+                        continue
+                    if max_step is None or si_val > max_step:
+                        max_step = si_val
+                        latest_sel = it_w
+                elif comp == "final_termination_check":
+                    final_tc = it_w
+                elif comp == "symbol_to_nl":
+                    sym2nl_trace = it_w
+
+            eid = str(outcome.example_id)
+            return {
+                "example_id": eid,
+                "nl_to_symbol": _pack_hybrid_trace(nl_trace, eid),
+                "selector_latest_step": _pack_hybrid_trace(latest_sel, eid, step_index=max_step),
+                "final_termination_check": _pack_hybrid_trace(final_tc, eid),
+                "symbol_to_nl": _pack_hybrid_trace(sym2nl_trace, eid),
+            }
+    return None
+
+
+def _actual_prompts_and_answers_for_run(
+    *,
+    suite: EvaluationSuite,
+    suite_report: SuiteReport,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "cot_single_step_example": None,
+    }
+
+    if suite.pipeline_mode == PipelineMode.COT_BASELINE:
+        for trep in suite_report.task_reports:
+            for outcome in trep.outcomes:
+                if not outcome.correct or not isinstance(outcome.result, CoTResult):
+                    continue
+                interaction = getattr(outcome.result, "llm_interaction", None)
+                if not isinstance(interaction, dict):
+                    continue
+                out["cot_single_step_example"] = {
+                    "component": interaction.get("component"),
+                    "example_id": outcome.example_id,
+                    "system_prompt": interaction.get("system_prompt"),
+                    "user_prompt": interaction.get("user_prompt"),
+                    "answer": interaction.get("raw_answer"),
+                }
+                break
+            if out["cot_single_step_example"] is not None:
+                break
+    return out
+
+
 def persist_evaluation_run(
     *,
     artifacts_root: Path,
@@ -610,6 +718,14 @@ def persist_evaluation_run(
         },
         "system_prompts_used_by_role": system_prompts_used_by_role,
         "system_prompts_used_content_by_hash": system_prompts_used_content_by_hash,
+        "actual_prompts_and_answers": _actual_prompts_and_answers_for_run(
+            suite=suite,
+            suite_report=suite_report,
+        ),
+        "symbolic_hybrid_llm_call_samples": _symbolic_hybrid_llm_call_samples_for_run(
+            suite=suite,
+            suite_report=suite_report,
+        ),
     }
     (run_dir / "run_meta.json").write_text(
         json.dumps(run_meta, indent=2, ensure_ascii=False) + "\n",

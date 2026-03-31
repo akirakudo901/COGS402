@@ -43,20 +43,31 @@ def convert_problem_to_symbols(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> Tuple[List[Premise], AnswerSpec]:
+) -> Tuple[List[Premise], AnswerSpec, Dict[str, Any]]:
     """
     Convert a natural‑language problem into initial symbolic premises and an answer spec.
+
+    Returns a third element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_prompt = _build_user_prompt(problem)
     system_prompt = system_prompt_override or NL_TO_SYMBOL_SYSTEM_PROMPT
-    data = llm.generate_json(
+    parsed, raw = llm.generate_json(
         system_prompt,
         user_prompt,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _symbols_from_data(data)
+    premises, answer_spec = _symbols_from_data(parsed)
+    trace = {
+        "component": "nl_to_symbol",
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return premises, answer_spec, trace
 
 
 def _symbols_from_data(data: Dict[str, Any]) -> Tuple[List[Premise], AnswerSpec]:
@@ -101,18 +112,29 @@ async def convert_problem_to_symbols_async(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> Tuple[List[Premise], AnswerSpec]:
+) -> Tuple[List[Premise], AnswerSpec, Dict[str, Any]]:
     """
     Async version: convert NL problem to symbolic premises and answer spec via LLMExecutor.
+
+    Returns a third element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_prompt = _build_user_prompt(problem)
     system_prompt = system_prompt_override or NL_TO_SYMBOL_SYSTEM_PROMPT
-    data = await llm_exec.generate_json(
+    parsed, raw = await llm_exec.generate_json(
         system_prompt,
         user_prompt,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _symbols_from_data(data)
+    premises, answer_spec = _symbols_from_data(parsed)
+    trace = {
+        "component": "nl_to_symbol",
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return premises, answer_spec, trace
 
