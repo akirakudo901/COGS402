@@ -58,9 +58,11 @@ def select_next_step(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> SelectorDecision:
+) -> tuple[SelectorDecision, Dict[str, Any]]:
     """
     Ask the LLM which premises to combine next and what goal to pursue.
+
+    Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     system_prompt = _build_system_prompt(
@@ -69,14 +71,23 @@ def select_next_step(
         select_multiple_candidates=False,
         system_prompt_override=system_prompt_override,
     )
-    data = llm.generate_json(
+    parsed, raw = llm.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _decision_from_data(data)
+    decision = _decision_from_data(parsed)
+    trace = {
+        "component": "selector_select_next_step",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return decision, trace
 
 
 def select_next_step_candidates(
@@ -93,16 +104,17 @@ def select_next_step_candidates(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> tuple[TerminationCheckerDecision, List[SelectorDecision]]:
+) -> tuple[TerminationCheckerDecision, List[SelectorDecision], Dict[str, Any]]:
     """
     Ask the LLM for N candidate next steps (ordered by likelihood).
 
     Returns:
     - A termination-only decision (termination fields filled; selection fields empty)
     - A list of candidate SelectorDecisions (length <= num_candidates)
+    - Trace dict for the LLM call (prompts + raw/parsed answer)
     """
     if num_candidates <= 1:
-        one = select_next_step(
+        one, trace = select_next_step(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
@@ -116,7 +128,7 @@ def select_next_step_candidates(
             system_prompt_override=system_prompt_override,
         )
         term_only = _termination_checker_decision_from_data(one.__dict__)
-        return term_only, [one]
+        return term_only, [one], trace
 
     user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     user_content = (
@@ -133,16 +145,17 @@ def select_next_step_candidates(
         system_prompt_override=system_prompt_override,
     )
 
-    data = llm.generate_json(
+    parsed, raw = llm.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
 
-    term_only = _termination_checker_decision_from_data(data)
-    candidates_raw = data.get("candidates", [])
+    term_only = _termination_checker_decision_from_data(parsed)
+    candidates_raw = parsed.get("candidates", [])
     if not isinstance(candidates_raw, list):
         candidates_raw = []
 
@@ -159,7 +172,14 @@ def select_next_step_candidates(
         if len(candidates) >= int(num_candidates):
             break
 
-    return term_only, candidates
+    trace = {
+        "component": "selector_select_next_step",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return term_only, candidates, trace
 
 
 def _build_user_content(
@@ -277,9 +297,11 @@ async def select_next_step_async(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> SelectorDecision:
+) -> tuple[SelectorDecision, Dict[str, Any]]:
     """
     Async version: ask the LLM which premises to combine next via LLMExecutor.
+
+    Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     system_prompt = _build_system_prompt(
@@ -288,14 +310,23 @@ async def select_next_step_async(
         select_multiple_candidates=False,
         system_prompt_override=system_prompt_override,
     )
-    data = await llm_exec.generate_json(
+    parsed, raw = await llm_exec.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _decision_from_data(data)
+    decision = _decision_from_data(parsed)
+    trace = {
+        "component": "selector_select_next_step",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return decision, trace
 
 
 async def select_next_step_candidates_async(
@@ -312,26 +343,26 @@ async def select_next_step_candidates_async(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> tuple[TerminationCheckerDecision, List[SelectorDecision]]:
+) -> tuple[TerminationCheckerDecision, List[SelectorDecision], Dict[str, Any]]:
     """
     Async version of `select_next_step_candidates`.
     """
     if num_candidates <= 1:
-        one = await select_next_step_async(
+        one, trace = await select_next_step_async(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
             llm_exec=llm_exec,
             failed_steps_context=failed_steps_context,
             use_termination_checks=use_termination_checks,
-                allow_background_premises=allow_background_premises,
+            allow_background_premises=allow_background_premises,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
         )
         term_only = _termination_checker_decision_from_data(one.__dict__)
-        return term_only, [one]
+        return term_only, [one], trace
 
     user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
     user_content = (
@@ -348,16 +379,17 @@ async def select_next_step_candidates_async(
         system_prompt_override=system_prompt_override,
     )
 
-    data = await llm_exec.generate_json(
+    parsed, raw = await llm_exec.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
 
-    term_only = _termination_checker_decision_from_data(data)
-    candidates_raw = data.get("candidates", [])
+    term_only = _termination_checker_decision_from_data(parsed)
+    candidates_raw = parsed.get("candidates", [])
     if not isinstance(candidates_raw, list):
         candidates_raw = []
 
@@ -372,7 +404,14 @@ async def select_next_step_candidates_async(
         candidates.append(cand)
         if len(candidates) >= int(num_candidates):
             break
-    return term_only, candidates
+    trace = {
+        "component": "selector_select_next_step",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return term_only, candidates, trace
 
 
 def check_termination(
@@ -386,10 +425,12 @@ def check_termination(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> TerminationCheckerDecision:
+) -> tuple[TerminationCheckerDecision, Dict[str, Any]]:
     """
     Ask the LLM whether we have reached a final (ground-fact) solution and, if so,
     propose a linking rule that makes the answer head derivable.
+
+    Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_content = _build_termination_checker_user_content(
         problem=problem,
@@ -398,14 +439,22 @@ def check_termination(
         recent_premise=recent_premise,
     )
     system_prompt = system_prompt_override or TERMINATION_CHECK_SYSTEM_PROMPT
-    data = llm.generate_json(
+    parsed, raw = llm.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _termination_checker_decision_from_data(data)
+    trace = {
+        "component": "final_termination_check",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return _termination_checker_decision_from_data(parsed), trace
 
 
 def _build_termination_checker_user_content(
@@ -444,9 +493,11 @@ async def check_termination_async(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> TerminationCheckerDecision:
+) -> tuple[TerminationCheckerDecision, Dict[str, Any]]:
     """
     Async version of :func:`check_termination`.
+
+    Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_content = _build_termination_checker_user_content(
         problem=problem,
@@ -455,12 +506,20 @@ async def check_termination_async(
         recent_premise=recent_premise,
     )
     system_prompt = system_prompt_override or TERMINATION_CHECK_SYSTEM_PROMPT
-    data = await llm_exec.generate_json(
+    parsed, raw = await llm_exec.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _termination_checker_decision_from_data(data)
+    trace = {
+        "component": "final_termination_check",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return _termination_checker_decision_from_data(parsed), trace
 

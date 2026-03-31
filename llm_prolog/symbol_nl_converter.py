@@ -7,7 +7,7 @@ LLM to paraphrase each clause into concise natural‑language explanations.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
@@ -33,20 +33,31 @@ def symbols_to_nl(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> Dict[int, str]:
+) -> Tuple[Dict[int, str], Dict[str, Any]]:
     """
     Ask the LLM to paraphrase each symbolic premise into NL.
+
+    Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_content = _build_user_content(problem, premises)
     system_prompt = system_prompt_override or SYMBOL_TO_NL_SYSTEM_PROMPT
-    data = llm.generate_json(
+    parsed, raw = llm.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _explanations_from_data(data)
+    explanations = _explanations_from_data(parsed)
+    trace = {
+        "component": "symbol_to_nl",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return explanations, trace
 
 
 def _build_user_content(problem: str, premises: List[Premise]) -> str:
@@ -83,18 +94,29 @@ async def symbols_to_nl_async(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
-) -> Dict[int, str]:
+) -> Tuple[Dict[int, str], Dict[str, Any]]:
     """
     Async version: ask the LLM to paraphrase each symbolic premise into NL via LLMExecutor.
+
+    Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
     user_content = _build_user_content(problem, premises)
     system_prompt = system_prompt_override or SYMBOL_TO_NL_SYSTEM_PROMPT
-    data = await llm_exec.generate_json(
+    parsed, raw = await llm_exec.generate_json(
         system_prompt,
         user_content,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        return_raw=True,
     )
-    return _explanations_from_data(data)
+    explanations = _explanations_from_data(parsed)
+    trace = {
+        "component": "symbol_to_nl",
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return explanations, trace
 
