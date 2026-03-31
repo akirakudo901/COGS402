@@ -633,6 +633,7 @@ class PipelineResult:
     # originals, selector‑provided background premises, and inferred ones.
     final_premises: List[Premise]
     reason: Optional[str] = None
+    llm_interactions: Optional[List[Dict[str, Any]]] = None
 
     def __repr__(self) -> str:
         parts = [
@@ -641,6 +642,7 @@ class PipelineResult:
             f"steps={self.steps!r}",
             f"answer_spec={self.answer_spec!r}",
             f"final_premises={self.final_premises!r}",
+            f"llm_interactions={self.llm_interactions!r}",
         ]
         if self.reason is not None:
             parts.append(f"reason={self.reason!r}")
@@ -718,6 +720,7 @@ class PipelineResult:
             "answer_spec": self.answer_spec.to_json_dict(),
             "final_premises": [p.to_json_dict() for p in self.final_premises],
             "reason": self.reason,
+            "llm_interactions": self.llm_interactions,
         }
 
     @staticmethod
@@ -739,6 +742,9 @@ class PipelineResult:
             raise ValueError("Invalid PipelineResult.final_premises")
         final_premises = [Premise.from_json_dict(p) for p in finals_raw]
         reason = data.get("reason") if isinstance(data.get("reason"), str) else None
+        llm_interactions = data.get("llm_interactions")
+        if llm_interactions is not None and not isinstance(llm_interactions, list):
+            raise ValueError("Invalid PipelineResult.llm_interactions")
         return PipelineResult(
             success=bool(data.get("success", False)),
             answer_premise=ans_prem,
@@ -746,6 +752,7 @@ class PipelineResult:
             answer_spec=answer_spec,
             final_premises=final_premises,
             reason=reason,
+            llm_interactions=llm_interactions,
         )
 
 def extract_premise_derivation_dict(
