@@ -204,11 +204,12 @@ def _system_prompts_used_by_role(
                 prompt_text=cot_override,
             )
         else:
+            COT_PROMPT_NAME = "cot_solver_fewshot"
             _maybe_add_used_prompt_entry(
                 used_roles["cot_solver"],
                 component="cot_solver",
-                prompt_name="cot_solver",
-                prompt_text=SYSTEM_PROMPTS_BY_NAME["cot_solver"],
+                prompt_name=COT_PROMPT_NAME,
+                prompt_text=SYSTEM_PROMPTS_BY_NAME[COT_PROMPT_NAME],
             )
 
     return used_roles
