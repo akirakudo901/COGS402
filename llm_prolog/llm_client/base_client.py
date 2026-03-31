@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -200,4 +200,15 @@ class BaseLLMClient:
                 candidate = raw_stripped[start : end + 1]
                 return json.loads(candidate)
             raise
+
+    def _parse_json_response_with_optional_raw(
+        self,
+        raw: str,
+        *,
+        return_raw: bool = False,
+    ) -> Union[Any, Tuple[Any, str]]:
+        parsed = self._parse_json_response(raw)
+        if return_raw:
+            return parsed, raw
+        return parsed
 

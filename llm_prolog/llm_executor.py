@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import Any, Optional
+from typing import Any, Optional, Tuple, Union
 
 from .llm_client.async_llm_client import AsyncLLMClient
 
@@ -115,7 +115,8 @@ class LLMExecutor:
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-    ) -> Any:
+        return_raw: bool = False,
+    ) -> Union[Any, Tuple[Any, str]]:
         """
         Run a single generate_json call through the executor (concurrency + optional retry).
         """
@@ -126,6 +127,7 @@ class LLMExecutor:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                return_raw=return_raw,
             )
 
     async def _generate_json_with_retry(
@@ -136,7 +138,8 @@ class LLMExecutor:
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-    ) -> Any:
+        return_raw: bool = False,
+    ) -> Union[Any, Tuple[Any, str]]:
         policy = self._retry_policy
         max_attempts = policy[0] if policy else 1
         base_delay = policy[1] if policy else 0.0
@@ -150,6 +153,7 @@ class LLMExecutor:
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    return_raw=return_raw,
                 )
             except Exception as e:
                 last_error = e
