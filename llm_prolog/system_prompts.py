@@ -113,22 +113,33 @@ Once done with termination check:
 """
 
 
-SELECTOR_MAIN_SECTION = """
-- State what new premise you intend for the inference engine to derive. This premise 
-  must be new among existing premises.
-- Indicate whether this new premise is directly the answer head goal.
-- Optionally propose new background premises (facts or rules) if the
-  current theory is insufficient.
-- Choose exactly ONE **consumer** rule (a clause with a head and body) by `selected_rule_id`.
-- Choose ONE OR MORE **producers** by listing their premise IDs in `selected_fact_ids` in the **order**
-  they should be applied. Each producer may be a **fact** (head only) or a **rule** (head and body).
-  For each goal position in the consumer, in order, the inference engine consumes the **first** producer 
-  in the remaining producers' 'pool' that unifies with that goal. Producers used for a goal are removed from the pool.
-- You MUST NOT choose an order of premises that has been previously combined to produce an existing premise.
-- Use the failed-step history to avoid repeating choices that failed for known reasons.
+def get_selector_main_section(include_background: bool = True) -> str:
+    base = (
+        "- State what new premise you intend for the inference engine to derive. This premise \n"
+        "  must be new among existing premises.\n"
+        "- Indicate whether this new premise is directly the answer head goal.\n"
+    )
+    background = (
+        "- Optionally propose new background premises (facts or rules) if the\n"
+        "  current theory is insufficient.\n"
+    )
+    rest = (
+        "- Choose exactly ONE **consumer** rule (a clause with a head and body) by `selected_rule_id`.\n"
+        "- Choose ONE OR MORE **producers** by listing their premise IDs in `selected_fact_ids` in the **order**\n"
+        "  they should be applied. Each producer may be a **fact** (head only) or a **rule** (head and body).\n"
+        "  For each goal position in the consumer, in order, the inference engine consumes the **first** producer \n"
+        "  in the remaining producers' 'pool' that unifies with that goal. Producers used for a goal are removed from the pool.\n"
+        "- You MUST NOT choose an order of premises that has been previously combined to produce an existing premise.\n"
+        "- Use the failed-step history to avoid repeating choices that failed for known reasons.\n\n"
+        "Output MUST be a single JSON object with the fields:\n"
+    )
+    if include_background:
+        return "\n" + base + background + rest
+    else:
+        return "\n" + base + rest
 
-Output MUST be a single JSON object with the fields:
-"""
+SELECTOR_MAIN_SECTION = get_selector_main_section(include_background=True)
+SELECTOR_MAIN_SECTION_NO_BACKGROUND = get_selector_main_section(include_background=False)
 
 
 TERMINATION_CHECK_JSON_SECTION = """
@@ -142,18 +153,30 @@ For selection of next premise:
 """
 
 
-SELECTOR_JSON_SECTION = """
-- "proposed_new_premise": string or null (a Prolog‑style clause WITHOUT
-  needing to be valid; this is an intention. It must be new from existing premises).
-- "is_new_proposal": boolean.
-- "is_answer_goal": boolean.
-- "background_premises": list of strings, each a fact or rule ending
-  with a period.
-- "selected_rule_id": integer ID of the **consumer** rule premise for this step.
-- "selected_fact_ids": ordered list of integer IDs of **producer** premises (each may be a fact or a
-  rule). Order matters: the engine matches slot 0 against producers in this order, then slot 1 against
-  what remains, and so on.
-"""
+def get_selector_json_section(include_background: bool = True) -> str:
+    """
+    Returns the JSON section prompt describing selector output fields. If include_background
+    is True, includes background premises; otherwise omits it.
+    """
+    fields = [
+        '- "proposed_new_premise": string or null (a Prolog‑style clause WITHOUT',
+        '  needing to be valid; this is an intention. It must be new from existing premises).',
+        '- "is_new_proposal": boolean.',
+        '- "is_answer_goal": boolean.',
+    ]
+    if include_background:
+        fields.append('- "background_premises": list of strings, each a fact or rule ending')
+        fields.append('  with a period.')
+    fields += [
+        '- "selected_rule_id": integer ID of the **consumer** rule premise for this step.',
+        '- "selected_fact_ids": ordered list of integer IDs of **producer** premises (each may be a fact or a',
+        '  rule). Order matters: the engine matches slot 0 against producers in this order, then slot 1 against',
+        '  what remains, and so on.'
+    ]
+    return "\n" + "\n".join(fields) + "\n"
+
+SELECTOR_JSON_SECTION = get_selector_json_section(include_background=True)
+SELECTOR_JSON_SECTION_NO_BACKGROUND = get_selector_json_section(include_background=False)
 
 
 TERMINATION_CHECK_SYSTEM_PROMPT = """
