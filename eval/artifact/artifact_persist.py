@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from eval.eval_suite import (
     EvaluationSuite,
@@ -24,6 +24,8 @@ from eval.eval_suite import (
     SimpleEvalTask,
     SuiteReport,
 )
+from llm_prolog.cot_baseline import CoTResult
+from llm_prolog.symbolic.types import PipelineResult
 from llm_prolog.system_prompts import (
     SYSTEM_PROMPTS_BY_NAME,
     SYSTEM_PROMPT_HASHES_BY_NAME,
@@ -567,3 +569,130 @@ def persist_evaluation_run(
         (run_dir / "failures.jsonl").write_text("\n".join(failure_lines) + "\n", encoding="utf-8")
 
     return run_dir
+
+
+def export_pipeline_results_to_text(
+    run_meta_or_dir: Union[str, Path],
+    output_path: Union[str, Path],
+) -> Path:
+    """
+    Given either:
+      - a path to a specific run_meta.json file, or
+      - a directory containing run_meta.json,
+    deserialize the per-example pipeline results from examples.jsonl using the
+    appropriate result type (CoTResult or PipelineResult) and write a
+    human-readable summary to the specified text file.
+    """
+    run_meta_or_dir = Path(run_meta_or_dir)
+    if run_meta_or_dir.is_dir():
+        run_dir = run_meta_or_dir
+        run_meta_path = run_dir / "run_meta.json"
+    else:
+        run_meta_path = run_meta_or_dir
+        run_dir = run_meta_path.parent
+
+    if not run_meta_path.is_file():
+        raise FileNotFoundError(f"run_meta.json not found at {run_meta_path}")
+
+    examples_path = run_dir / "examples.jsonl"
+    if not examples_path.is_file():
+        raise FileNotFoundError(f"examples.jsonl not found in {run_dir}")
+
+    # Load run_meta primarily to validate that this looks like an evaluation run
+    # directory and to expose basic header information in the output.
+    with run_meta_path.open("r", encoding="utf-8") as f:
+        run_meta = json.load(f)
+
+    lines = examples_path.read_text(encoding="utf-8").splitlines()
+    out_lines: List[str] = []
+
+    header = "="*30 + "\n"
+    header += f"# run_id: {run_meta.get('run_id')}\n"
+    header += f"# pipeline_mode: {run_meta.get('pipeline_mode')}\n"
+    header += f"# suite_name: {run_meta.get('suite_name')}\n"
+    out_lines.append(header.rstrip("\n"))
+
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as e:
+            out_lines.append(f"\n# Line {i}: JSON decode error: {e}")
+            continue
+
+        output = obj.get("output")
+        if not isinstance(output, dict):
+            # Nothing to deserialize for this example.
+            continue
+
+        result_type = output.get("result_type")
+        example_id = obj.get("example_id")
+
+        try:
+            if result_type == "CoTResult":
+                result_obj = CoTResult.from_json_dict(output)
+            elif result_type == "PipelineResult":
+                result_obj = PipelineResult.from_json_dict(output)
+            else:
+                result_obj = None
+        except Exception as e:
+            out_lines.append(
+                f"{'='*30}"
+                f"\nexample_id={example_id!r} result_type={result_type!r} "
+                f"[deserialization_error: {e}]"
+            )
+            continue
+
+        if result_obj is None:
+            # Fallback: just echo the raw JSON payload if we don't recognize the type.
+            rendered = json.dumps(output, ensure_ascii=False)
+        else:
+            rendered = str(result_obj)
+
+        out_lines.append(
+            f"{'='*30}"
+            f"\nexample_id={example_id!r} "
+            f"result_type={result_type!r} "
+            f"success={obj.get('success')!r}"
+        )
+        out_lines.append(
+            f"expected_answer={obj.get('ground_truth')!r} | "
+            f"obtained_answer={obj.get('obtained')!r} | "
+            f"matched={bool(obj.get('success'))!r}"
+            )
+        out_lines.append(rendered)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    return output_path
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+    from typing import Union
+
+    def process_all_runs_in_folder(base_folder: Union[str, Path]):
+        base_folder = Path(base_folder)
+        for phase in ["phase-1", "phase-2"]:
+            phase_dir = base_folder / phase
+            if not phase_dir.exists() or not phase_dir.is_dir():
+                print(f"[WARN] Phase directory not found: {phase_dir}")
+                continue
+            for run_dir in phase_dir.iterdir():
+                if run_dir.is_dir() and run_dir.name.startswith("run"):
+                    run_meta_path = run_dir / "run_meta.json"
+                    if not run_meta_path.exists():
+                        print(f"[WARN] run_meta.json not found in {run_dir}")
+                        continue
+                    try:
+                        print(f"[INFO] Processing {run_meta_path}")
+                        export_pipeline_results_to_text(
+                            run_meta_or_dir=run_dir,
+                            output_path=run_dir / "pipeline_result_text.txt"
+                        )
+                    except Exception as e:
+                        print(f"[ERROR] Failed to process {run_dir}: {e}")
+    
+    process_all_runs_in_folder("./artifacts/where-it-breaks-test")
