@@ -232,10 +232,12 @@ def model_spec_to_json(spec: ModelSpec) -> Dict[str, Any]:
 def build_output_summary(result: Any, pipeline_mode: PipelineMode) -> Dict[str, Any]:
     if pipeline_mode == PipelineMode.COT_BASELINE:
         answer_text = getattr(result, "answer_text", None)
+        reasoning = getattr(result, "reasoning", None)
         model = getattr(result, "model", None)
         return {
             "result_type": "CoTResult",
             "answer_text": answer_text if isinstance(answer_text, str) else None,
+            "reasoning": reasoning if isinstance(reasoning, str) else None,
             "model": model,
         }
     if pipeline_mode == PipelineMode.SYMBOLIC_HYBRID:
@@ -497,7 +499,23 @@ def persist_evaluation_run(
                 "success": success,
                 "reason": reason if isinstance(reason, str) or reason is None else str(reason),
                 "output_summary": build_output_summary(outcome.result, suite.pipeline_mode),
+                # Full per-example execution payload (serializable JSON).
+                "output": None,
             }
+
+            # Prefer full `to_json_dict()` payload if available.
+            output_payload: Any = None
+            if outcome.result is not None:
+                to_json = getattr(outcome.result, "to_json_dict", None)
+                if callable(to_json):
+                    try:
+                        output_payload = to_json()
+                    except Exception:
+                        output_payload = None
+                if output_payload is None:
+                    # Fallback: keep at least something schema-valid.
+                    output_payload = build_output_summary(outcome.result, suite.pipeline_mode)
+            rec["output"] = output_payload
             example_lines.append(json.dumps(rec, ensure_ascii=False))
 
             if write_failures:
