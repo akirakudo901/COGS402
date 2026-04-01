@@ -33,11 +33,18 @@ from llm_prolog.system_prompts import (
 )
 
 
-def new_run_id() -> str:
-    """Timestamp + short hash for a unique run directory name."""
+def new_run_id(model: str) -> str:
+    """
+    Timestamp + short hash + model short name for a unique run directory name.
+
+    ``model`` is an OpenRouter-style id (e.g. meta-llama/llama-3.1); only the
+    final segment is appended (e.g. llama-3.1).
+    """
     ts = time.strftime("%Y%m%d_%H%M%S")
     h = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:8]
-    return f"{ts}_{h}"
+    m = (model or "").strip().rstrip("/")
+    short = m.split("/")[-1] if m else "unknown"
+    return f"{ts}_{h}_{short}"
 
 
 def git_code_version(repo_root: Optional[Path] = None) -> str:

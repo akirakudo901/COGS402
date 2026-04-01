@@ -53,7 +53,9 @@ def run_cot_baseline_evaluation(
     )
     print(report)
 
-    run_id = new_run_id()
+    _roles = suite.pipeline_mode.get_required_roles()
+    _model = suite.model_by_role[_roles[0]].model if _roles else ""
+    run_id = new_run_id(_model)
     ablation = {
         "variant_id": variant_id,
         "component_overrides": ablation_overrides or {},

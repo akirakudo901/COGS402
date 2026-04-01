@@ -52,7 +52,9 @@ def run_symbolic_hybrid_evaluation(
         )
     )
 
-    run_id = new_run_id()
+    _roles = suite.pipeline_mode.get_required_roles()
+    _model = suite.model_by_role[_roles[0]].model if _roles else ""
+    run_id = new_run_id(_model)
     run_dir = persist_evaluation_run(
         artifacts_root=artifacts_root.resolve(),
         run_id=run_id,
