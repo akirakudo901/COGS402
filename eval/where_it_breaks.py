@@ -372,11 +372,16 @@ def analyze_where_it_breaks_folder(
     fig1.tight_layout()
 
     # ----- Phase 2 data (role, model, accuracy) -----
-    phase2_points: List[Tuple[str, str, float]] = []
+    phase2_points: List[Tuple[str, str, float, int | None]] = []
+    fixed_best_models: List[str] = []
     for rm in phase2_metas:
         overrides = ((rm.get("ablation") or {}).get("component_overrides") or {})
         role = overrides.get("swept_role")
         model = overrides.get("swept_model")
+        swept_index = overrides.get("swept_index")
+        fbm = overrides.get("fixed_best_model")
+        if isinstance(fbm, str) and fbm:
+            fixed_best_models.append(fbm)
         if role is None:
             role = "unknown"
         if model is None:
@@ -388,14 +393,34 @@ def analyze_where_it_breaks_folder(
             acc_val = float(acc) if acc is not None else 0.0
         except (TypeError, ValueError):
             acc_val = 0.0
-        phase2_points.append((str(role), str(model), acc_val))
+        idx_val: int | None = None
+        if isinstance(swept_index, int):
+            idx_val = swept_index
+        else:
+            try:
+                idx_val = int(swept_index)
+            except (TypeError, ValueError):
+                idx_val = None
+        phase2_points.append((str(role), str(model), acc_val, idx_val))
+
+    # Best model for titles/leftmost reference.
+    best_model: str
+    if fixed_best_models:
+        # Choose most common fixed-best model, to guard against mixed folders.
+        from collections import Counter
+
+        best_model = Counter(fixed_best_models).most_common(1)[0][0]
+    else:
+        # Fallback: best model is the top Phase 1 performer.
+        best_model = max(phase1_model_acc.items(), key=lambda kv: kv[1])[0]
+    best_model_short = _get_model_family_and_name(best_model)[1]
 
     role_order = ["nl_to_symbol", "selector"]
-    all_roles = sorted({r for r, _m, _a in phase2_points if r not in role_order})
+    all_roles = sorted({r for r, _m, _a, _i in phase2_points if r not in role_order})
     role_order.extend(all_roles)
     role_to_x = {r: i for i, r in enumerate(role_order)}
 
-    models_for_colors = sorted({m for _r, m, _a in phase2_points} | set(phase1_models))
+    models_for_colors = sorted({m for _r, m, _a, _i in phase2_points} | set(phase1_models))
     cmap = plt.get_cmap("tab20")
     model_to_color = {m: cmap(i % 20) for i, m in enumerate(models_for_colors)}
 
@@ -404,7 +429,7 @@ def analyze_where_it_breaks_folder(
     ax2 = fig2.add_subplot(111)
 
     # Plot phase 2 dots.
-    for role, model, acc in phase2_points:
+    for role, model, acc, _idx in phase2_points:
         x = role_to_x.get(role, 0)
         ax2.scatter(
             x,
@@ -432,7 +457,9 @@ def analyze_where_it_breaks_folder(
     ax2.set_xticklabels(role_order)
     ax2.set_xlabel("Role-to-sweep")
     ax2.set_ylabel("Accuracy")
-    ax2.set_title("Where-it-breaks Phase 2: staircase performance (+ phase 1 references)")
+    ax2.set_title(
+        f"Where-it-breaks Phase 2: staircase performance (+ phase 1 references) | best={best_model_short}"
+    )
     ax2.set_xlim(-1.0, len(role_order))
     ax2.set_ylim(0.0, 1.0)
     ax2.grid(axis="y", alpha=0.2)
@@ -451,11 +478,110 @@ def analyze_where_it_breaks_folder(
     ax2.legend(handles=model_handles + marker_handles, loc="best", fontsize=8, ncol=2)
     fig2.tight_layout()
 
+    # ----- Additional Phase 2 figures: one Phase-1-style bar chart per swept component -----
+    # Group phase 2 points by role, keeping ladder order by swept_index when present.
+    points_by_role: Dict[str, List[Tuple[str, float, int | None]]] = {}
+    for role, model, acc, idx in phase2_points:
+        points_by_role.setdefault(role, []).append((model, acc, idx))
+
+    component_figs: Dict[str, Any] = {}
+    for role in role_order:
+        if role not in points_by_role:
+            continue
+        pts = points_by_role[role]
+        # Sort by swept_index when available; otherwise stable by model name.
+        pts_sorted = sorted(
+            pts,
+            key=lambda t: (t[2] is None, t[2] if t[2] is not None else 10**9, t[0]),
+        )
+        swept_models = [m for (m, _a, _i) in pts_sorted]
+        swept_accs = [a for (_m, a, _i) in pts_sorted]
+
+        # Build x-axis order with best model at leftmost.
+        model_order = [best_model] + [m for m in swept_models if m != best_model]
+        phase2_acc_by_model = {m: a for m, a, _i in pts_sorted}
+        phase2_accs_aligned: List[float | None] = []
+        phase1_accs_aligned: List[float] = []
+        for m in model_order:
+            phase2_accs_aligned.append(phase2_acc_by_model.get(m))
+            phase1_accs_aligned.append(phase1_model_acc.get(m, 0.0))
+
+        short_models = [_get_model_family_and_name(m)[1] for m in model_order]
+        families = [_get_model_family_and_name(m)[0] for m in model_order]
+        unique_fams = list(dict.fromkeys(families))
+        fam_to_color = {fam: plt.get_cmap("tab20")(i % 20) for i, fam in enumerate(unique_fams)}
+        colors = [fam_to_color[fam] for fam in families]
+
+        figc = plt.figure(figsize=(max(7, 0.9 * len(model_order)), 4.8))
+        axc = figc.add_subplot(111)
+        xs = list(range(len(model_order)))
+        width = 0.42
+
+        # Phase 2 bars (solid). If missing (e.g. best model isn't run in that sweep), draw zero-height.
+        phase2_heights = [float(v) if v is not None else 0.0 for v in phase2_accs_aligned]
+        axc.bar(
+            [x - width / 2 for x in xs],
+            phase2_heights,
+            width=width,
+            color=colors,
+            label="phase 2 (sweep run)",
+        )
+
+        # Phase 1 reference bars (hatched contour).
+        axc.bar(
+            [x + width / 2 for x in xs],
+            phase1_accs_aligned,
+            width=width,
+            facecolor="none",
+            edgecolor=colors,
+            hatch="..",
+            linewidth=1.5,
+            label="phase 1 (reference)",
+        )
+
+        # Best model Phase 1 marker (star) at the leftmost position.
+        best_ref_acc = phase1_model_acc.get(best_model, 0.0)
+        axc.scatter(
+            [0],
+            [best_ref_acc],
+            marker="*",
+            s=220,
+            color="black",
+            zorder=5,
+            label="best model (phase 1)",
+        )
+
+        axc.set_xticks(xs)
+        axc.set_xticklabels(short_models, rotation=35, ha="right")
+        axc.set_xlabel("Model (best model shown at leftmost)")
+        axc.set_ylabel("Accuracy")
+        axc.set_ylim(0.0, 1.0)
+        axc.set_title(
+            f"Where-it-breaks Phase 2 sweep: {role} | best={best_model_short} (phase 1 star)"
+        )
+        axc.grid(axis="y", alpha=0.2)
+
+        # Legend: families + bar meaning + star.
+        from matplotlib.patches import Patch
+        from matplotlib.lines import Line2D
+
+        fam_handles = [Patch(facecolor=fam_to_color[f], label=f) for f in unique_fams]
+        style_handles = [
+            Patch(facecolor="gray", edgecolor="gray", label="phase 2 (sweep run)"),
+            Patch(facecolor="none", edgecolor="gray", hatch="..", label="phase 1 (reference)"),
+            Line2D([0], [0], marker="*", color="black", linestyle="None", markersize=12, label="best model (phase 1)"),
+        ]
+        axc.legend(handles=fam_handles + style_handles, title="Legend", loc="best", fontsize=8, ncol=2)
+        figc.tight_layout()
+        component_figs[role] = figc
+
     if save_dir is not None:
         out = Path(save_dir).resolve()
         out.mkdir(parents=True, exist_ok=True)
         fig1.savefig(out / "where_it_breaks_phase1_performance.png", dpi=200, bbox_inches="tight")
         fig2.savefig(out / "where_it_breaks_phase2_staircase.png", dpi=200, bbox_inches="tight")
+        for role, figc in component_figs.items():
+            figc.savefig(out / f"where_it_breaks_phase2_sweep_{role}.png", dpi=200, bbox_inches="tight")
         print(f"[where-it-breaks] Saved plots to {out}")
 
     if show:
@@ -463,11 +589,15 @@ def analyze_where_it_breaks_folder(
     else:
         plt.close(fig1)
         plt.close(fig2)
+        for figc in component_figs.values():
+            plt.close(figc)
 
     return {
         "parent_folder": str(parent),
         "phase1_model_acc": phase1_model_acc,
-        "phase2_points": [{"role": r, "model": m, "accuracy": a} for (r, m, a) in phase2_points],
+        "phase2_points": [
+            {"role": r, "model": m, "accuracy": a, "swept_index": i} for (r, m, a, i) in phase2_points
+        ],
     }
 
 def where_it_breaks_50exs():
