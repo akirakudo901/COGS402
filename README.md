@@ -57,7 +57,13 @@ Design details are in `llm-prolog/llm_prolog_plan.md`.
 ## Configuration
 
 - **OpenRouter**: API key and optional overrides (e.g. `OPENROUTER_MODEL`) are handled in `llm-prolog/config.py`. Default model is `openai/gpt-4.1-mini`.
-- **Pipeline**: `PipelineConfig` in `pipeline.py` supports `max_steps` and an `explain` flag for NL explanations.
+- **Pipeline**: `PipelineConfig` in `pipeline.py` supports: 
+  - `max_steps`: maximum step for the symbolic hybrid pipeline
+  - `explain`: whether to get NL explanations at the end
+  - `use_termination_checks`: whether to use termination checks for each pipeline step 
+  - `use_final_termination_check`: whether to use a final termination check after exhausting max_steps
+  - `selector_num_candidates`: number of candidates generated at each step
+  - `allow_background_premises`: toggles whether the selector may propose background premises.
 - **Inference backend policy**:
   - `LLM_PROLOG_INFERENCE_POLICY=strict` (default): require `pySwip` + SWI-Prolog and raise an error if unavailable.
   - `LLM_PROLOG_INFERENCE_POLICY=fallback`: automatically use the legacy Python inference path if Prolog backend init fails.
