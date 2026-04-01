@@ -399,50 +399,69 @@ class EvaluationSuite:
 
         return _run
 
-    def _print_openrouter_balance_before(self, llm_or_client):
-        """
-        Helper to optionally fetch and print Openrouter balance before execution.
-        Returns the balance before, or None.
-        """
-        try:
-            balance_before = llm_or_client.get_credits_usage_balance()["balance"]
-            print(f"[Openrouter] Balance before execution: {balance_before}")
-            return balance_before
-        except Exception as e:
-            print(f"[Openrouter] Failed to fetch balance before execution: {e}")
-            return None
+    @staticmethod
+    def _usage_stats_snapshot(client: Any) -> Dict[str, Any]:
+        return dict(client.get_usage_stats())
 
-    def _print_openrouter_balance_after(self, llm_or_client, balance_before):
-        """
-        Helper to optionally fetch and print Openrouter balance after execution,
-        and used credit since 'balance_before'.
-        """
-        try:
-            balance_after = llm_or_client.get_credits_usage_balance()["balance"]
-            print(f"[Openrouter] Balance after execution: {balance_after}")
-            if balance_before is not None and balance_after is not None:
-                used = float(balance_before) - float(balance_after)
-                print(f"[Openrouter] Credit used for this suite: {used:.6f}")
-        except Exception as e:
-            print(f"[Openrouter] Failed to fetch balance after execution: {e}")
+    @staticmethod
+    def _usage_stats_delta(
+        before: Mapping[str, Any], after: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        keys = (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "n_requests",
+            "cost_usd",
+            "reasoning_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+        )
+        out: Dict[str, Any] = {}
+        for k in keys:
+            b = before.get(k, 0)
+            a = after.get(k, 0)
+            if isinstance(b, float) or isinstance(a, float):
+                out[k] = float(a) - float(b)
+            else:
+                out[k] = int(a) - int(b)
+        return out
+
+    def _print_llm_usage_before(self, llm_or_client: Any) -> Dict[str, Any]:
+        """Snapshot client-local usage counters (from API responses) right after reset."""
+        snap = self._usage_stats_snapshot(llm_or_client)
+        print(f"[LLM usage] Before suite run: {snap}")
+        return snap
+
+    def _print_llm_usage_after(
+        self, llm_or_client: Any, usage_before: Mapping[str, Any]
+    ) -> None:
+        """Print usage after the suite and the per-field delta since usage_before."""
+        snap_after = self._usage_stats_snapshot(llm_or_client)
+        print(f"[LLM usage] After suite run: {snap_after}")
+        delta = self._usage_stats_delta(usage_before, snap_after)
+        print(
+            f"[LLM usage] This suite — cost_usd={delta['cost_usd']:.6f}, "
+            f"total_tokens={delta['total_tokens']}, n_requests={delta['n_requests']}"
+        )
 
     def run(self, show_openrouter_balance: bool = True) -> SuiteReport:
         """
         Run all tasks sequentially. If show_openrouter_balance is True, print
-        the Openrouter balance before and after, and the credit used.
+        accumulated LLM usage (from each API response) before and after, and the delta.
         """
         wall0 = time.perf_counter()
         started_at = datetime.now(timezone.utc).isoformat()
         client = self._make_llm_client()
         client.reset_usage_stats()
         if show_openrouter_balance:
-            balance_before = self._print_openrouter_balance_before(client)
+            usage_before = self._print_llm_usage_before(client)
         runner = self._runner(llm=client)
         reports: List[TaskReport] = []
         for task in self.tasks:
             reports.append(self.run_task(task, runner=runner))
         if show_openrouter_balance:
-            self._print_openrouter_balance_after(client, balance_before)
+            self._print_llm_usage_after(client, usage_before)
         finished_at = datetime.now(timezone.utc).isoformat()
         duration_s = time.perf_counter() - wall0
         run_metadata: Dict[str, Any] = {
@@ -469,14 +488,14 @@ class EvaluationSuite:
         """
         Run all tasks with concurrent pipelines; LLM calls are bounded by max_in_flight.
         Uses one shared AsyncLLMClient and LLMExecutor per suite run.
-        If show_openrouter_balance is True, print balance before and after, and used credit.
+        If show_openrouter_balance is True, print accumulated LLM usage before/after and the delta.
         """
         wall0 = time.perf_counter()
         started_at = datetime.now(timezone.utc).isoformat()
         async with AsyncLLMClient() as client:
             client.reset_usage_stats()
             if show_openrouter_balance:
-                balance_before = self._print_openrouter_balance_before(client)
+                usage_before = self._print_llm_usage_before(client)
 
             executor = LLMExecutor(client, max_in_flight=max_in_flight)
             reports: List[TaskReport] = []
@@ -485,10 +504,10 @@ class EvaluationSuite:
                     task, llm_exec=executor, max_in_flight=max_in_flight, print_progress=print_progress
                 )
                 reports.append(report)
-            
+
             llm_usage = client.get_usage_stats()
             if show_openrouter_balance:
-                self._print_openrouter_balance_after(client, balance_before)
+                self._print_llm_usage_after(client, usage_before)
         finished_at = datetime.now(timezone.utc).isoformat()
         duration_s = time.perf_counter() - wall0
         run_metadata: Dict[str, Any] = {
