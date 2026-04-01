@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 
-from .base_client import BaseLLMClient, ChatMessage, Conversation
-from .config import OpenRouterConfig, load_openrouter_config
+from .base_client import BaseLLMClient, ChatMessage
+from .config import OpenRouterConfig
 
 
 
@@ -120,25 +120,3 @@ class AsyncLLMClient(BaseLLMClient):
             max_tokens=max_tokens,
         )
         return self._parse_json_response_with_optional_raw(raw, return_raw=return_raw)
-    
-    async def continue_conversation(
-        self,
-        conversation: Conversation,
-        user_content: str,
-        *,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> str:
-        """
-        Append a user message, send, and record the assistant reply (async).
-        """
-        messages = conversation.build_messages(user_content)
-        data = await self._post(
-            messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        reply = self._extract_content(data)
-        conversation.append_user(user_content)
-        conversation.append_assistant(reply)
-        return reply
