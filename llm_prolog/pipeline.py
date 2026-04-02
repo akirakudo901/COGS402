@@ -89,20 +89,31 @@ class FailedStep:
         if not failed_steps:
             return ""
 
-        grouped: dict[str, List[FailedStep]] = defaultdict(list)
+        # First deduplicate by (proposed_premise, combined_premise_ids) *per note*.
+        # Then compress further: within the same note, if combined ids match exactly,
+        # aggregate all distinct proposed premises into one list.
+        grouped: dict[str, dict[Tuple[int, ...], Set[str]]] = defaultdict(lambda: defaultdict(set))
         for failed in failed_steps:
-            grouped[failed.note].append(failed)
+            note = failed.note
+            combined_key = tuple(failed.combined_premise_ids)
+            proposed = (
+                failed.proposed_premise
+                if failed.proposed_premise is not None
+                else "None"
+            )
+            grouped[note][combined_key].add(proposed)
 
         lines: List[str] = [
             "Past failed steps (grouped by reason):",
         ]
         for note in sorted(grouped):
             lines.append(f"- note='{note}'")
-            for failed in grouped[note]:
-                proposed = failed.proposed_premise if failed.proposed_premise is not None else "None"
-                lines.append(
-                    f"  (proposed='{proposed}', combined={failed.combined_premise_ids})"
-                )
+            combined_map = grouped[note]
+            for combined_key in sorted(combined_map.keys()):
+                combined_ids = list(combined_key)
+                proposed_list = sorted(combined_map[combined_key])
+                # Show combined ids first, then all proposed premises (as strings).
+                lines.append(f"  (combined={combined_ids}, proposed={proposed_list})")
         return "\n".join(lines) + "\n\n"
 
 
