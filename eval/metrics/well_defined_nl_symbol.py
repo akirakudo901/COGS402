@@ -49,6 +49,24 @@ _MAX_ANSWER_BINDINGS = 10_000
 _SWIPL_QUERY_TIME_LIMIT_SECONDS = 5
 
 
+def _pyswip_load_clp_extensions(prolog: Any) -> None:
+    """
+    Load SWI-Prolog CLP libraries so constraint arithmetic is available.
+
+    ``library(clpfd)`` provides finite-domain constraints (e.g. ``#=/2``).
+    ``library(clpqr)`` provides CLP over rationals and reals (e.g. ``{}/1``).
+    Each load is best-effort so a missing optional install does not break metrics.
+    """
+    for q in (
+        "use_module(library(clpfd))",
+        "use_module(library(clpqr))",
+    ):
+        try:
+            list(prolog.query(q, maxresult=1))
+        except Exception:
+            pass
+
+
 def _pyswip_prepare_embedded_engine(prolog: Any) -> None:
     """
     Batch-style SWI-Prolog settings for PySwip.
@@ -62,6 +80,7 @@ def _pyswip_prepare_embedded_engine(prolog: Any) -> None:
         list(prolog.query("set_prolog_flag(debug_on_error, false)", maxresult=1))
     except Exception:
         pass
+    _pyswip_load_clp_extensions(prolog)
 
 
 def _pyswip_retract_clause(prolog: Any, clause_text: str) -> None:
