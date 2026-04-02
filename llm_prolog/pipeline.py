@@ -28,7 +28,6 @@ from .selector import (
     select_next_step_candidates,
     select_next_step_candidates_async,
 )
-from . import selector_legacy
 from .symbolic.inference import infer_new_premise, unify_predicates, validate_inference_premise_selection
 from .symbolic.types import (
     AnswerSpec,
@@ -498,15 +497,10 @@ def _run_symbolic_steps(
 
     iterator = step_iter if step_iter is not None else tqdm(range(pipeline_cfg.max_steps))
     for step_idx in iterator:
-        selector_fn = (
-            selector_legacy.select_next_step_candidates
-            if pipeline_cfg.selector_prompt_mode == "legacy_rebuild"
-            else select_next_step_candidates
-        )
         selector_kwargs = {}
         if pipeline_cfg.selector_prompt_mode != "legacy_rebuild":
             selector_kwargs["prompt_session"] = selector_session
-        term_decision, candidates, selector_trace = selector_fn(
+        term_decision, candidates, selector_trace = select_next_step_candidates(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
@@ -704,15 +698,10 @@ async def _run_symbolic_steps_async(
 
     iterator = step_iter if step_iter is not None else range(pipeline_cfg.max_steps)
     for step_idx in iterator:
-        selector_fn_async = (
-            selector_legacy.select_next_step_candidates_async
-            if pipeline_cfg.selector_prompt_mode == "legacy_rebuild"
-            else select_next_step_candidates_async
-        )
         selector_kwargs_async = {}
         if pipeline_cfg.selector_prompt_mode != "legacy_rebuild":
             selector_kwargs_async["prompt_session"] = selector_session
-        term_decision, candidates, selector_trace = await selector_fn_async(
+        term_decision, candidates, selector_trace = await select_next_step_candidates_async(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,

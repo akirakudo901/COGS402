@@ -8,14 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
-from .selector_legacy import (
-    TerminationCheckerDecision,
-    _build_system_prompt as _legacy_build_system_prompt,
-    _decision_from_data,
-    _termination_checker_decision_from_data,
-)
 from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premises
-from .system_prompts import TERMINATION_CHECK_SYSTEM_PROMPT
+from .system_prompts import TERMINATION_CHECK_SYSTEM_PROMPT, _build_selector_system_prompt
 
 
 PREMISE_RENDER_VERBOSITY = 2
@@ -57,6 +51,95 @@ class SelectorPromptSession:
             f"- proposed_premise: {prop}\n"
             f"- combined_premise_ids: [{ids_repr}]\n"
         )
+
+
+@dataclass
+class TerminationCheckerDecision:
+    is_final_solution: bool
+    solution_premise_id: Optional[int]
+    answer_link_rule: Optional[str]
+
+
+def _decision_from_data(data: Dict[str, Any]) -> SelectorDecision:
+    selected_rule_id = data.get("selected_rule_id") or None
+    selected_fact_ids = data.get("selected_fact_ids") or []
+
+    try:
+        selected_fact_ids = [selected_rule_id] + list(selected_fact_ids)
+    except Exception:
+        selected_fact_ids = []
+
+    selected_ids_clean: List[int] = []
+    for v in selected_fact_ids:
+        try:
+            selected_ids_clean.append(int(v))
+        except (TypeError, ValueError):
+            continue
+
+    proposed = data.get("proposed_new_premise")
+    if proposed is not None and not isinstance(proposed, str):
+        proposed = None
+
+    background = data.get("background_premises") or []
+    if not isinstance(background, list):
+        background = []
+    background_clean = [str(x) for x in background if isinstance(x, (str, int, float))]
+
+    is_answer_goal = bool(data.get("is_answer_goal", False))
+
+    termination = _termination_checker_decision_from_data(data)
+
+    # `should_stop` and `stop_reason` are filled by the pipeline once we checked the new premise
+    # is a fact uniting with the goal predicate.
+    return SelectorDecision(
+        selected_premise_ids=selected_ids_clean,
+        proposed_new_premise=proposed,
+        background_premises=background_clean,
+        is_answer_goal=is_answer_goal,
+        is_final_solution=termination.is_final_solution,
+        solution_premise_id=termination.solution_premise_id,
+        answer_link_rule=termination.answer_link_rule,
+        should_stop=False,
+        stop_reason=None,
+    )
+
+
+def _termination_checker_decision_from_data(data: Dict[str, Any]) -> TerminationCheckerDecision:
+    """
+    Extract termination-check fields from JSON.
+    """
+    raw_final_flag = data.get("is_final_solution", False)
+    if isinstance(raw_final_flag, bool):
+        is_final_solution = raw_final_flag
+    elif isinstance(raw_final_flag, str):
+        is_final_solution = raw_final_flag.strip().lower() in ("true", "1", "yes", "y")
+    else:
+        is_final_solution = bool(raw_final_flag)
+
+    solution_id_raw = data.get("solution_premise_id", None)
+    solution_premise_id: Optional[int] = None
+    if solution_id_raw is not None:
+        try:
+            solution_premise_id = int(solution_id_raw)
+        except (TypeError, ValueError):
+            solution_premise_id = None
+
+    rule_raw = data.get("answer_link_rule", None)
+    answer_link_rule: Optional[str] = rule_raw if isinstance(rule_raw, str) else None
+    if answer_link_rule is not None:
+        answer_link_rule = answer_link_rule.strip()
+        if not answer_link_rule:
+            answer_link_rule = None
+
+    if not is_final_solution:
+        solution_premise_id = None
+        answer_link_rule = None
+
+    return TerminationCheckerDecision(
+        is_final_solution=is_final_solution,
+        solution_premise_id=solution_premise_id,
+        answer_link_rule=answer_link_rule,
+    )
 
 
 def select_next_step(
@@ -118,12 +201,14 @@ def _build_system_prompt(
     select_multiple_candidates: bool,
     system_prompt_override: str | None,
 ) -> str:
-    return _legacy_build_system_prompt(
-        use_termination_checks=use_termination_checks,
-        allow_background_premises=allow_background_premises,
-        select_multiple_candidates=select_multiple_candidates,
-        system_prompt_override=system_prompt_override,
-    )
+    if system_prompt_override:
+        return system_prompt_override
+    else:
+        return _build_selector_system_prompt(
+            use_termination_checks=use_termination_checks,
+            allow_background_premises=allow_background_premises,
+            select_multiple_candidates=select_multiple_candidates,
+        )
 
 
 def select_next_step_candidates(
