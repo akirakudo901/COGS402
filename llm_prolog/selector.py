@@ -18,7 +18,6 @@ from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premis
 from .system_prompts import TERMINATION_CHECK_SYSTEM_PROMPT
 
 
-_STEP_SECTION_RULE = "\n\n" + ("-" * 72) + "\n"
 PREMISE_RENDER_VERBOSITY = 2
 
 
@@ -37,9 +36,7 @@ class SelectorPromptSession:
         """Append a delta after a successful inference step (new derived premise)."""
         self._outcome_count += 1
         self.accumulated_user_prompt += (
-            f"{_STEP_SECTION_RULE}"
-            f"## Outcome {self._outcome_count} (success — new premise)\n\n"
-            "Newly derived premise:\n"
+            f"## Outcome {self._outcome_count}, newly derived:\n\n"
             f"{render_premises([premise], verbosity_level=PREMISE_RENDER_VERBOSITY)}\n"
         )
 
@@ -55,9 +52,7 @@ class SelectorPromptSession:
         prop = proposed_premise if proposed_premise is not None else "None"
         ids_repr = ", ".join(str(i) for i in combined_premise_ids)
         self.accumulated_user_prompt += (
-            f"{_STEP_SECTION_RULE}"
-            f"## Outcome {self._outcome_count} (failure — latest attempt)\n\n"
-            "Latest failed inference attempt:\n"
+            f"## Outcome {self._outcome_count}, latest inference failed:\n\n"
             f"- note: {note}\n"
             f"- proposed_premise: {prop}\n"
             f"- combined_premise_ids: [{ids_repr}]\n"
@@ -273,10 +268,8 @@ def init_selector_prompt_session(
     in `_build_user_content` via `accumulated_user_prompt`.
     """
     base = (
-        "Selector context (append-only). Below is the initial theory; after each symbolic "
-        "step the pipeline appends **only** that step's outcome: either one new premise "
+        "After each step, we append **only** its outcome: one new premise "
         "(success) or one latest failed attempt.\n\n"
-        "### Initial snapshot\n\n"
         "**Problem**\n"
         f"{problem.strip()}\n\n"
         "**Answer head predicate**\n"
