@@ -1,41 +1,56 @@
 """
-Selector module.
-
-Given the current set of premises and the target answer head, this module
-asks an LLM to decide which premises to combine next, optionally propose
-new background premises, and state whether we are aiming directly for the
-answer goal.
+Selector module with append-friendly prompt sessions.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
 from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premises
-from .system_prompts import (
-    _build_selector_system_prompt,
-    TERMINATION_CHECK_SYSTEM_PROMPT
-)
+from .system_prompts import TERMINATION_CHECK_SYSTEM_PROMPT, _build_selector_system_prompt
 
 
-def _build_system_prompt(
-    *,
-    use_termination_checks: bool,
-    allow_background_premises: bool,
-    select_multiple_candidates: bool,
-    system_prompt_override: str | None,
-) -> str:
-    if system_prompt_override:
-        return system_prompt_override
-    else:
-        return _build_selector_system_prompt(
-            use_termination_checks=use_termination_checks, 
-            allow_background_premises=allow_background_premises,
-            select_multiple_candidates=select_multiple_candidates
-            )
+PREMISE_RENDER_VERBOSITY = 2
 
+
+@dataclass
+class SelectorPromptSession:
+    """
+    Initial snapshot plus incremental updates only (see `append_*` methods).
+    The pipeline records the outcome of each symbolic step before the next selector call.
+    Each API call is one user message via `generate_json`.
+    """
+
+    accumulated_user_prompt: str
+    _outcome_count: int = field(default=0, repr=False)
+
+    def append_success_new_premise(self, premise: Premise) -> None:
+        """Append a delta after a successful inference step (new derived premise)."""
+        self._outcome_count += 1
+        self.accumulated_user_prompt += (
+            f"## Outcome {self._outcome_count}, newly derived:\n\n"
+            f"{render_premises([premise], verbosity_level=PREMISE_RENDER_VERBOSITY)}\n"
+        )
+
+    def append_latest_failure(
+        self,
+        *,
+        note: str,
+        proposed_premise: Optional[str],
+        combined_premise_ids: List[int],
+    ) -> None:
+        """Append a single latest failed attempt (not grouped with prior failures)."""
+        self._outcome_count += 1
+        prop = proposed_premise if proposed_premise is not None else "None"
+        ids_repr = ", ".join(str(i) for i in combined_premise_ids)
+        self.accumulated_user_prompt += (
+            f"## Outcome {self._outcome_count}, latest inference failed:\n\n"
+            f"- note: {note}\n"
+            f"- proposed_premise: {prop}\n"
+            f"- combined_premise_ids: [{ids_repr}]\n"
+        )
 
 
 @dataclass
@@ -43,6 +58,88 @@ class TerminationCheckerDecision:
     is_final_solution: bool
     solution_premise_id: Optional[int]
     answer_link_rule: Optional[str]
+
+
+def _decision_from_data(data: Dict[str, Any]) -> SelectorDecision:
+    selected_rule_id = data.get("selected_rule_id") or None
+    selected_fact_ids = data.get("selected_fact_ids") or []
+
+    try:
+        selected_fact_ids = [selected_rule_id] + list(selected_fact_ids)
+    except Exception:
+        selected_fact_ids = []
+
+    selected_ids_clean: List[int] = []
+    for v in selected_fact_ids:
+        try:
+            selected_ids_clean.append(int(v))
+        except (TypeError, ValueError):
+            continue
+
+    proposed = data.get("proposed_new_premise")
+    if proposed is not None and not isinstance(proposed, str):
+        proposed = None
+
+    background = data.get("background_premises") or []
+    if not isinstance(background, list):
+        background = []
+    background_clean = [str(x) for x in background if isinstance(x, (str, int, float))]
+
+    is_answer_goal = bool(data.get("is_answer_goal", False))
+
+    termination = _termination_checker_decision_from_data(data)
+
+    # `should_stop` and `stop_reason` are filled by the pipeline once we checked the new premise
+    # is a fact uniting with the goal predicate.
+    return SelectorDecision(
+        selected_premise_ids=selected_ids_clean,
+        proposed_new_premise=proposed,
+        background_premises=background_clean,
+        is_answer_goal=is_answer_goal,
+        is_final_solution=termination.is_final_solution,
+        solution_premise_id=termination.solution_premise_id,
+        answer_link_rule=termination.answer_link_rule,
+        should_stop=False,
+        stop_reason=None,
+    )
+
+
+def _termination_checker_decision_from_data(data: Dict[str, Any]) -> TerminationCheckerDecision:
+    """
+    Extract termination-check fields from JSON.
+    """
+    raw_final_flag = data.get("is_final_solution", False)
+    if isinstance(raw_final_flag, bool):
+        is_final_solution = raw_final_flag
+    elif isinstance(raw_final_flag, str):
+        is_final_solution = raw_final_flag.strip().lower() in ("true", "1", "yes", "y")
+    else:
+        is_final_solution = bool(raw_final_flag)
+
+    solution_id_raw = data.get("solution_premise_id", None)
+    solution_premise_id: Optional[int] = None
+    if solution_id_raw is not None:
+        try:
+            solution_premise_id = int(solution_id_raw)
+        except (TypeError, ValueError):
+            solution_premise_id = None
+
+    rule_raw = data.get("answer_link_rule", None)
+    answer_link_rule: Optional[str] = rule_raw if isinstance(rule_raw, str) else None
+    if answer_link_rule is not None:
+        answer_link_rule = answer_link_rule.strip()
+        if not answer_link_rule:
+            answer_link_rule = None
+
+    if not is_final_solution:
+        solution_premise_id = None
+        answer_link_rule = None
+
+    return TerminationCheckerDecision(
+        is_final_solution=is_final_solution,
+        solution_premise_id=solution_premise_id,
+        answer_link_rule=answer_link_rule,
+    )
 
 
 def select_next_step(
@@ -58,13 +155,20 @@ def select_next_step(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
+    prompt_session: SelectorPromptSession | None = None,
 ) -> tuple[SelectorDecision, Dict[str, Any]]:
     """
     Ask the LLM which premises to combine next and what goal to pursue.
 
     Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
-    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
+    user_content = _build_user_content(
+        problem,
+        premises,
+        answer_spec,
+        failed_steps_context,
+        prompt_session=prompt_session,
+    )
     system_prompt = _build_system_prompt(
         use_termination_checks=use_termination_checks,
         allow_background_premises=allow_background_premises,
@@ -90,6 +194,23 @@ def select_next_step(
     return decision, trace
 
 
+def _build_system_prompt(
+    *,
+    use_termination_checks: bool,
+    allow_background_premises: bool,
+    select_multiple_candidates: bool,
+    system_prompt_override: str | None,
+) -> str:
+    if system_prompt_override:
+        return system_prompt_override
+    else:
+        return _build_selector_system_prompt(
+            use_termination_checks=use_termination_checks,
+            allow_background_premises=allow_background_premises,
+            select_multiple_candidates=select_multiple_candidates,
+        )
+
+
 def select_next_step_candidates(
     problem: str,
     premises: List[Premise],
@@ -104,6 +225,7 @@ def select_next_step_candidates(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
+    prompt_session: SelectorPromptSession | None = None,
 ) -> tuple[TerminationCheckerDecision, List[SelectorDecision], Dict[str, Any]]:
     """
     Ask the LLM for N candidate next steps (ordered by likelihood).
@@ -126,11 +248,18 @@ def select_next_step_candidates(
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
+            prompt_session=prompt_session,
         )
         term_only = _termination_checker_decision_from_data(one.__dict__)
         return term_only, [one], trace
 
-    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
+    user_content = _build_user_content(
+        problem,
+        premises,
+        answer_spec,
+        failed_steps_context,
+        prompt_session=prompt_session,
+    )
     user_content = (
         user_content
         + "\n\n"
@@ -187,101 +316,53 @@ def _build_user_content(
     premises: List[Premise],
     answer_spec: AnswerSpec,
     failed_steps_context: str = "",
+    *,
+    prompt_session: SelectorPromptSession | None = None,
 ) -> str:
-    premises_block = render_premises(premises, verbosity_level=2)
-    failed_block = failed_steps_context or ""
+    if prompt_session is None:
+        premises_block = render_premises(premises, verbosity_level=PREMISE_RENDER_VERBOSITY)
+        failed_block = failed_steps_context or ""
+
+        return (
+            "Problem:\n"
+            f"{problem.strip()}\n\n"
+            "Current premises (by ID):\n"
+            f"{premises_block}\n\n"
+            f"{failed_block}"
+            "Answer head predicate:\n"
+            f"{answer_spec.target}\n\n"
+            "Decide the next reasoning step following the instructions."
+        )
     return (
-        "Problem:\n"
+        prompt_session.accumulated_user_prompt
+        + "\n\nDecide the next reasoning step following the instructions."
+    )
+
+
+def init_selector_prompt_session(
+    *,
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    use_termination_checks: bool = True,
+    allow_background_premises: bool = True,
+    system_prompt_override: str | None = None,
+) -> SelectorPromptSession:
+    """
+    Prefix shared across all selector turns. Step-specific state is appended per call
+    in `_build_user_content` via `accumulated_user_prompt`.
+    """
+    base = (
+        "After each step, we append **only** its outcome: one new premise "
+        "(success) or one latest failed attempt.\n\n"
+        "**Problem**\n"
         f"{problem.strip()}\n\n"
-        "Current premises (by ID):\n"
-        f"{premises_block}\n\n"
-        f"{failed_block}"
-        "Answer head predicate:\n"
+        "**Answer head predicate**\n"
         f"{answer_spec.target}\n\n"
-        "Decide the next reasoning step following the instructions."
+        "**Premises (by ID)**\n"
+        f"{render_premises(premises, verbosity_level=PREMISE_RENDER_VERBOSITY)}\n"
     )
-
-
-def _decision_from_data(data: Dict[str, Any]) -> SelectorDecision:
-    selected_rule_id = data.get("selected_rule_id") or None
-    selected_fact_ids = data.get("selected_fact_ids") or []
-    
-    try:
-        selected_fact_ids = [selected_rule_id] + list(selected_fact_ids)
-    except Exception:
-        selected_fact_ids = []
-    
-    selected_ids_clean: List[int] = []
-    for v in selected_fact_ids:
-        try:
-            selected_ids_clean.append(int(v))
-        except (TypeError, ValueError):
-            continue
-
-    proposed = data.get("proposed_new_premise")
-    if proposed is not None and not isinstance(proposed, str):
-        proposed = None
-
-    background = data.get("background_premises") or []
-    if not isinstance(background, list):
-        background = []
-    background_clean = [str(x) for x in background if isinstance(x, (str, int, float))]
-
-    is_answer_goal = bool(data.get("is_answer_goal", False))
-
-    termination = _termination_checker_decision_from_data(data)
-
-    # 'should_stop' and 'stop_reason' are filled by the pipeline once we checked the new premise
-    # is a fact uniting with the goal predicate
-    return SelectorDecision(
-        selected_premise_ids=selected_ids_clean,
-        proposed_new_premise=proposed,
-        background_premises=background_clean,
-        is_answer_goal=is_answer_goal,
-        is_final_solution=termination.is_final_solution,
-        solution_premise_id=termination.solution_premise_id,
-        answer_link_rule=termination.answer_link_rule,
-        should_stop=False,
-        stop_reason=None,
-    )
-
-
-def _termination_checker_decision_from_data(data: Dict[str, Any]) -> TerminationCheckerDecision:
-    """
-    Extract termination-check fields from JSON.
-    """
-    raw_final_flag = data.get("is_final_solution", False)
-    if isinstance(raw_final_flag, bool):
-        is_final_solution = raw_final_flag
-    elif isinstance(raw_final_flag, str):
-        is_final_solution = raw_final_flag.strip().lower() in ("true", "1", "yes", "y")
-    else:
-        is_final_solution = bool(raw_final_flag)
-
-    solution_id_raw = data.get("solution_premise_id", None)
-    solution_premise_id: Optional[int] = None
-    if solution_id_raw is not None:
-        try:
-            solution_premise_id = int(solution_id_raw)
-        except (TypeError, ValueError):
-            solution_premise_id = None
-
-    rule_raw = data.get("answer_link_rule", None)
-    answer_link_rule: Optional[str] = rule_raw if isinstance(rule_raw, str) else None
-    if answer_link_rule is not None:
-        answer_link_rule = answer_link_rule.strip()
-        if not answer_link_rule:
-            answer_link_rule = None
-
-    if not is_final_solution:
-        solution_premise_id = None
-        answer_link_rule = None
-
-    return TerminationCheckerDecision(
-        is_final_solution=is_final_solution,
-        solution_premise_id=solution_premise_id,
-        answer_link_rule=answer_link_rule,
-    )
+    return SelectorPromptSession(accumulated_user_prompt=base)
 
 
 async def select_next_step_async(
@@ -297,13 +378,20 @@ async def select_next_step_async(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
+    prompt_session: SelectorPromptSession | None = None,
 ) -> tuple[SelectorDecision, Dict[str, Any]]:
     """
     Async version: ask the LLM which premises to combine next via LLMExecutor.
 
     Always returns a second element: trace dict for the LLM call (prompts + raw/parsed answer).
     """
-    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
+    user_content = _build_user_content(
+        problem,
+        premises,
+        answer_spec,
+        failed_steps_context,
+        prompt_session=prompt_session,
+    )
     system_prompt = _build_system_prompt(
         use_termination_checks=use_termination_checks,
         allow_background_premises=allow_background_premises,
@@ -343,6 +431,7 @@ async def select_next_step_candidates_async(
     temperature: float | None = None,
     max_tokens: int | None = None,
     system_prompt_override: str | None = None,
+    prompt_session: SelectorPromptSession | None = None,
 ) -> tuple[TerminationCheckerDecision, List[SelectorDecision], Dict[str, Any]]:
     """
     Async version of `select_next_step_candidates`.
@@ -360,11 +449,18 @@ async def select_next_step_candidates_async(
             temperature=temperature,
             max_tokens=max_tokens,
             system_prompt_override=system_prompt_override,
+            prompt_session=prompt_session,
         )
         term_only = _termination_checker_decision_from_data(one.__dict__)
         return term_only, [one], trace
 
-    user_content = _build_user_content(problem, premises, answer_spec, failed_steps_context)
+    user_content = _build_user_content(
+        problem,
+        premises,
+        answer_spec,
+        failed_steps_context,
+        prompt_session=prompt_session,
+    )
     user_content = (
         user_content
         + "\n\n"
@@ -463,7 +559,7 @@ def _build_termination_checker_user_content(
     answer_spec: AnswerSpec,
     recent_premise: Optional[Premise],
 ) -> str:
-    premises_block = render_premises(premises, verbosity_level=2)
+    premises_block = render_premises(premises, verbosity_level=PREMISE_RENDER_VERBOSITY)
     recent_block = ""
     if recent_premise is not None:
         recent_block = (

@@ -24,6 +24,7 @@ from .selector import (
     TerminationCheckerDecision,
     check_termination,
     check_termination_async,
+    init_selector_prompt_session,
     select_next_step_candidates,
     select_next_step_candidates_async,
 )
@@ -47,6 +48,7 @@ class PipelineConfig:
     use_final_termination_check: bool = True
     selector_num_candidates: int = 1
     allow_background_premises: bool = True
+    selector_prompt_mode: str = "append_cache"
 
 
 @dataclass
@@ -86,21 +88,44 @@ class FailedStep:
         if not failed_steps:
             return ""
 
-        grouped: dict[str, List[FailedStep]] = defaultdict(list)
+        # First deduplicate by (proposed_premise, combined_premise_ids) *per note*.
+        # Then compress further: within the same note, if combined ids match exactly,
+        # aggregate all distinct proposed premises into one list.
+        grouped: dict[str, dict[Tuple[int, ...], Set[str]]] = defaultdict(lambda: defaultdict(set))
         for failed in failed_steps:
-            grouped[failed.note].append(failed)
+            note = failed.note
+            combined_key = tuple(failed.combined_premise_ids)
+            proposed = (
+                failed.proposed_premise
+                if failed.proposed_premise is not None
+                else "None"
+            )
+            grouped[note][combined_key].add(proposed)
 
         lines: List[str] = [
             "Past failed steps (grouped by reason):",
         ]
         for note in sorted(grouped):
             lines.append(f"- note='{note}'")
-            for failed in grouped[note]:
-                proposed = failed.proposed_premise if failed.proposed_premise is not None else "None"
-                lines.append(
-                    f"  (proposed='{proposed}', combined={failed.combined_premise_ids})"
-                )
+            combined_map = grouped[note]
+            for combined_key in sorted(combined_map.keys()):
+                combined_ids = list(combined_key)
+                proposed_list = sorted(combined_map[combined_key])
+                # Show combined ids first, then all proposed premises (as strings).
+                lines.append(f"  (combined={combined_ids}, proposed={proposed_list})")
         return "\n".join(lines) + "\n\n"
+
+
+def _selector_failed_steps_context(
+    pipeline_cfg: PipelineConfig, failed_steps: List[FailedStep]
+) -> str:
+    """
+    Grouped failure history for legacy selector prompts only.
+    Append-cache mode records one ungrouped failure at a time on the session instead.
+    """
+    if pipeline_cfg.selector_prompt_mode == "append_cache":
+        return ""
+    return FailedStep.format_grouped_for_selector(failed_steps)
 
 
 def _role_key(role: Any) -> str:
@@ -459,15 +484,30 @@ def _run_symbolic_steps(
     reason: Optional[str] = None
     used_premise_sets: Set[FrozenSet[int]] = set()
     failed_steps: List[FailedStep] = []
+    selector_session = None
+    if pipeline_cfg.selector_prompt_mode == "append_cache":
+        selector_session = init_selector_prompt_session(
+            problem=problem,
+            premises=premises,
+            answer_spec=answer_spec,
+            use_termination_checks=pipeline_cfg.use_termination_checks,
+            allow_background_premises=pipeline_cfg.allow_background_premises,
+            system_prompt_override=system_prompt_override,
+        )
 
     iterator = step_iter if step_iter is not None else tqdm(range(pipeline_cfg.max_steps))
     for step_idx in iterator:
+        selector_kwargs = {}
+        if pipeline_cfg.selector_prompt_mode != "legacy_rebuild":
+            selector_kwargs["prompt_session"] = selector_session
         term_decision, candidates, selector_trace = select_next_step_candidates(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
             llm=llm,
-            failed_steps_context=FailedStep.format_grouped_for_selector(failed_steps),
+            failed_steps_context=_selector_failed_steps_context(
+                pipeline_cfg, failed_steps
+            ),
             num_candidates=max(1, int(pipeline_cfg.selector_num_candidates)),
             model=model,
             temperature=temperature,
@@ -475,6 +515,7 @@ def _run_symbolic_steps(
             system_prompt_override=system_prompt_override,
             use_termination_checks=pipeline_cfg.use_termination_checks,
             allow_background_premises=pipeline_cfg.allow_background_premises,
+            **selector_kwargs,
         )
         if llm_interactions is not None:
             llm_interactions.append({"step_index": step_idx, **selector_trace})
@@ -563,6 +604,20 @@ def _run_symbolic_steps(
 
         steps.append(chosen_step)
 
+        if (
+            pipeline_cfg.selector_prompt_mode == "append_cache"
+            and selector_session is not None
+        ):
+            if chosen_step.success and chosen_step.new_premise is not None:
+                selector_session.append_success_new_premise(chosen_step.new_premise)
+            elif not chosen_step.success and failed_steps:
+                fs = failed_steps[-1]
+                selector_session.append_latest_failure(
+                    note=fs.note,
+                    proposed_premise=fs.proposed_premise,
+                    combined_premise_ids=fs.combined_premise_ids,
+                )
+
         if chosen_step.new_premise is not None and _answer_matches(chosen_step.new_premise, answer_spec):
             success = True
             final_answer = chosen_step.new_premise
@@ -630,15 +685,30 @@ async def _run_symbolic_steps_async(
     reason: Optional[str] = None
     used_premise_sets: Set[FrozenSet[int]] = set()
     failed_steps: List[FailedStep] = []
+    selector_session = None
+    if pipeline_cfg.selector_prompt_mode == "append_cache":
+        selector_session = init_selector_prompt_session(
+            problem=problem,
+            premises=premises,
+            answer_spec=answer_spec,
+            use_termination_checks=pipeline_cfg.use_termination_checks,
+            allow_background_premises=pipeline_cfg.allow_background_premises,
+            system_prompt_override=system_prompt_override,
+        )
 
     iterator = step_iter if step_iter is not None else range(pipeline_cfg.max_steps)
     for step_idx in iterator:
+        selector_kwargs_async = {}
+        if pipeline_cfg.selector_prompt_mode != "legacy_rebuild":
+            selector_kwargs_async["prompt_session"] = selector_session
         term_decision, candidates, selector_trace = await select_next_step_candidates_async(
             problem=problem,
             premises=premises,
             answer_spec=answer_spec,
             llm_exec=llm_exec,
-            failed_steps_context=FailedStep.format_grouped_for_selector(failed_steps),
+            failed_steps_context=_selector_failed_steps_context(
+                pipeline_cfg, failed_steps
+            ),
             num_candidates=max(1, int(pipeline_cfg.selector_num_candidates)),
             model=model,
             temperature=temperature,
@@ -646,6 +716,7 @@ async def _run_symbolic_steps_async(
             system_prompt_override=system_prompt_override,
             use_termination_checks=pipeline_cfg.use_termination_checks,
             allow_background_premises=pipeline_cfg.allow_background_premises,
+            **selector_kwargs_async,
         )
         if llm_interactions is not None:
             llm_interactions.append({"step_index": step_idx, **selector_trace})
@@ -732,6 +803,20 @@ async def _run_symbolic_steps_async(
             )
 
         steps.append(chosen_step)
+
+        if (
+            pipeline_cfg.selector_prompt_mode == "append_cache"
+            and selector_session is not None
+        ):
+            if chosen_step.success and chosen_step.new_premise is not None:
+                selector_session.append_success_new_premise(chosen_step.new_premise)
+            elif not chosen_step.success and failed_steps:
+                fs = failed_steps[-1]
+                selector_session.append_latest_failure(
+                    note=fs.note,
+                    proposed_premise=fs.proposed_premise,
+                    combined_premise_ids=fs.combined_premise_ids,
+                )
 
         if chosen_step.new_premise is not None and _answer_matches(chosen_step.new_premise, answer_spec):
             success = True
