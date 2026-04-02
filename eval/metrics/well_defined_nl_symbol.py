@@ -21,7 +21,7 @@ from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Sequence, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Set, Tuple, Union
 
 from llm_prolog.symbolic.inference import _predicate_to_prolog_goal_text
 from llm_prolog.symbolic.types import (
@@ -498,6 +498,19 @@ class WellDefinedNlSymbolSummary:
     #: symbolic-hybrid row (the same premises as ``premises_for_nl_symbol_validity_check``).
     #: Keys are ``WellDefinedFailureCategory`` values; only categories with count ≥ 1 appear.
     well_defined_check_outcome_counts: Mapping[str, int]
+    #: One entry per symbolic-hybrid row, in the same order as ``examples.jsonl`` is scanned.
+    #: First element is ``example_id`` from the artifact row (``example_id``, else ``id``,
+    #: else a synthetic ``_symbolic_hybrid_<n>``). Second element is the assess outcome.
+    per_example_well_defined_outcomes: Tuple[Tuple[str, NlSymbolWellDefinedOutcome], ...]
+
+
+def _example_id_from_jsonl_row(row: dict) -> str | None:
+    """Best-effort id for an ``examples.jsonl`` row (see ``artifact_persist``)."""
+    ex = row.get("example_id", row.get("id"))
+    if ex is None:
+        return None
+    s = str(ex).strip()
+    return s or None
 
 
 def summarize_well_defined_nl_symbol_metrics(
@@ -533,6 +546,7 @@ def summarize_well_defined_nl_symbol_metrics(
     ftc_premise_rows = 0
     wd_flipped_by_ftc = 0
     check_outcome_counter: Counter[str] = Counter()
+    per_example_outcomes: List[Tuple[str, NlSymbolWellDefinedOutcome]] = []
 
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -556,6 +570,7 @@ def summarize_well_defined_nl_symbol_metrics(
             continue
 
         symbolic_hybrid_rows += 1
+        example_id = _example_id_from_jsonl_row(row) or f"_symbolic_hybrid_{symbolic_hybrid_rows}"
         ground_truth = row.get("ground_truth")
         nl_only = initial_premises_from_nl_symbol_converter(result.final_premises)
         check_premises = premises_for_nl_symbol_validity_check(result)
@@ -573,6 +588,7 @@ def summarize_well_defined_nl_symbol_metrics(
             ground_truth,
         )
         check_outcome_counter[check_outcome.category.value] += 1
+        per_example_outcomes.append((example_id, check_outcome))
         wd = check_outcome.ok
         # TODO DEBUG REMOVE
         print(f"wd: {wd}")
@@ -608,6 +624,7 @@ def summarize_well_defined_nl_symbol_metrics(
         well_defined_check_outcome_counts=dict(
             sorted(check_outcome_counter.items(), key=lambda kv: kv[0])
         ),
+        per_example_well_defined_outcomes=tuple(per_example_outcomes),
     )
 
 if __name__ == "__main__":
