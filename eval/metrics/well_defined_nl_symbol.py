@@ -180,9 +180,6 @@ def _ground_truth_matches_value(ground_truth: Any, prolog_answer: str) -> bool:
         return False
 
     exp = _normalize_answer_string(ground_truth)
-    # TODO DEBUG REMOVE
-    print(f"Post-normalization, actual: {got}, expected: {exp}")
-    # TODO DEBUG REMOVE END
     if exp == got:
         return True
 
@@ -358,27 +355,15 @@ def nl_symbol_conversion_assess(
     assert_stack: List[str] = []
     solutions: List[Any] | None = None
     try:
-        # TODO DEBUG REMOVE
-        print("Asserted:")
-        # TODO DEBUG REMOVE END
         for t in texts:
             clause_text = t.strip()
             if clause_text.endswith("."):
                 clause_text = clause_text[:-1]
-            # TODO DEBUG REMOVE
-            print(f"  {clause_text}")
-            # TODO DEBUG REMOVE END
             prolog.assertz(clause_text)
             assert_stack.append(clause_text)
-        # TODO DEBUG REMOVE
-        print(f"goal:{goal}")
-        # TODO DEBUG REMOVE END
         timed_goal = f"call_with_time_limit({_SWIPL_QUERY_TIME_LIMIT_SECONDS}, {goal})"
         solutions = list(prolog.query(timed_goal, maxresult=_MAX_ANSWER_BINDINGS + 1))
     except Exception as e:
-        # TODO DEBUG REMOVE
-        print(f"Failing query due to exception: {e}")
-        # TODO DEBUG REMOVE END
         cat, detail = classify_swipl_pyswip_exception(e)
         return NlSymbolWellDefinedOutcome(ok=False, category=cat, detail=detail, message=str(e))
     finally:
@@ -386,9 +371,6 @@ def nl_symbol_conversion_assess(
             _pyswip_retract_clause(prolog, clause_text)
 
     if not solutions:
-        # TODO DEBUG REMOVE
-        print(f"We have no solution: {solutions}")
-        # TODO DEBUG REMOVE END
         return NlSymbolWellDefinedOutcome(
             ok=False,
             category=WellDefinedFailureCategory.NO_SOLUTION,
@@ -396,11 +378,6 @@ def nl_symbol_conversion_assess(
             message="zero solutions",
         )
     if len(solutions) > _MAX_ANSWER_BINDINGS:
-        # TODO DEBUG REMOVE
-        print(
-            f"We have too many solutions: {len(solutions)} vs. {_MAX_ANSWER_BINDINGS} allowed"
-        )
-        # TODO DEBUG REMOVE END
         return NlSymbolWellDefinedOutcome(
             ok=False,
             category=WellDefinedFailureCategory.TOO_MANY_BINDINGS,
@@ -412,9 +389,6 @@ def nl_symbol_conversion_assess(
     for sol in solutions:
         raw = _binding_for_var(sol, var_name)
         if raw is None:
-            # TODO DEBUG REMOVE
-            print(f"We failed to obtain the value bound to {var_name} within {sol}")
-            # TODO DEBUG REMOVE END
             return NlSymbolWellDefinedOutcome(
                 ok=False,
                 category=WellDefinedFailureCategory.VARIABLE_UNBOUND_IN_BINDING,
@@ -424,9 +398,6 @@ def nl_symbol_conversion_assess(
         distinct.add(_normalize_answer_string(raw))
 
     if len(distinct) != 1:
-        # TODO DEBUG REMOVE
-        print(f"We don't have a distinct answer: {distinct}")
-        # TODO DEBUG REMOVE END
         return NlSymbolWellDefinedOutcome(
             ok=False,
             category=WellDefinedFailureCategory.NON_UNIQUE_ANSWER,
@@ -435,9 +406,6 @@ def nl_symbol_conversion_assess(
         )
 
     only = next(iter(distinct))
-    # TODO DEBUG REMOVE
-    print(f"Pre-normalization, actual: {only}, expected: {ground_truth}")
-    # TODO DEBUG REMOVE END
     if _ground_truth_matches_value(ground_truth, only):
         return NlSymbolWellDefinedOutcome(
             ok=True,
@@ -590,10 +558,6 @@ def summarize_well_defined_nl_symbol_metrics(
         check_outcome_counter[check_outcome.category.value] += 1
         per_example_outcomes.append((example_id, check_outcome))
         wd = check_outcome.ok
-        # TODO DEBUG REMOVE
-        print(f"wd: {wd}")
-        print("~"*20)
-        # TODO DEBUG REMOVE END
         if result.success and has_ftc_premise:
             wd_nl = nl_symbol_conversion_assess(
                 nl_only,
