@@ -32,7 +32,13 @@ from typing import (
 from llm_prolog.llm_client.async_llm_client import AsyncLLMClient
 from llm_prolog.llm_client.llm_client import LLMClient
 from llm_prolog.llm_executor import LLMExecutor
-from llm_prolog.pipeline import PipelineConfig, run_pipeline_mode_async
+from llm_prolog.pipeline import (
+    PipelineConfig,
+    run_pipeline_mode_async,
+    run_symbolic_hybrid_after_nl,
+    run_symbolic_hybrid_after_nl_async,
+)
+from llm_prolog.symbolic.types import AnswerSpec, Premise
 
 
 class PipelineMode(str, Enum):
@@ -343,6 +349,9 @@ class EvaluationSuite:
     keep_all_outcomes: bool = False
     keep_random_k: int = 0
     seed: int = 0
+    # If set (symbolic hybrid only), skip NL→symbol per example and start the
+    # selector loop from these premises + answer_spec (e.g. loaded from a prior run).
+    symbolic_hybrid_initial_by_example_id: Optional[Dict[str, Tuple[List[Premise], AnswerSpec]]] = None
 
     def __post_init__(self):
         # Ensure model_by_role contains a mapping for all roles (in LLMRole)
@@ -549,14 +558,36 @@ class EvaluationSuite:
             try:
                 if print_progress:
                     print(f"Starting task {task.task_id}, example {example_id} at: {datetime.now().strftime('%H:%M:%S')}.")
-                result = await run_pipeline_mode_async(
-                    problem=problem,
-                    mode=self.pipeline_mode,
-                    pipeline_cfg=self.pipeline_cfg,
-                    llm_exec=llm_exec,
-                    model_by_role=self.model_by_role,
-                    prompt_overrides=self.prompt_overrides
-                )
+                if (
+                    self.pipeline_mode == PipelineMode.SYMBOLIC_HYBRID
+                    and self.symbolic_hybrid_initial_by_example_id is not None
+                ):
+                    seed_t = self.symbolic_hybrid_initial_by_example_id.get(example_id)
+                    if seed_t is None:
+                        raise KeyError(
+                            f"No reused initial symbolization for example_id={example_id!r} "
+                            f"(task {task.task_id})."
+                        )
+                    _premises, _ans = seed_t
+                    result = await run_symbolic_hybrid_after_nl_async(
+                        problem,
+                        premises=_premises,
+                        answer_spec=_ans,
+                        llm_exec=llm_exec,
+                        pipeline_cfg=self.pipeline_cfg,
+                        model_by_role=self.model_by_role,
+                        prompt_overrides=self.prompt_overrides,
+                        nl_symbol_trace=None,
+                    )
+                else:
+                    result = await run_pipeline_mode_async(
+                        problem=problem,
+                        mode=self.pipeline_mode,
+                        pipeline_cfg=self.pipeline_cfg,
+                        llm_exec=llm_exec,
+                        model_by_role=self.model_by_role,
+                        prompt_overrides=self.prompt_overrides,
+                    )
                 outcome, ok = _make_outcome_from_result(
                     task=task,
                     pipeline_mode=self.pipeline_mode,
@@ -617,6 +648,8 @@ class EvaluationSuite:
     ) -> TaskReport:
         import random
 
+        llm = LLMClient()
+
         rng = random.Random(self.seed)
         total = 0
         correct = 0
@@ -626,7 +659,29 @@ class EvaluationSuite:
             total += 1
             problem, expected, example_id = _get_example_fields(task, ex, i)
             try:
-                result = runner(problem)
+                if (
+                    self.pipeline_mode == PipelineMode.SYMBOLIC_HYBRID
+                    and self.symbolic_hybrid_initial_by_example_id is not None
+                ):
+                    seed_t = self.symbolic_hybrid_initial_by_example_id.get(example_id)
+                    if seed_t is None:
+                        raise KeyError(
+                            f"No reused initial symbolization for example_id={example_id!r} "
+                            f"(task {task.task_id})."
+                        )
+                    _premises, _ans = seed_t
+                    result = run_symbolic_hybrid_after_nl(
+                        problem,
+                        premises=_premises,
+                        answer_spec=_ans,
+                        llm=llm,
+                        pipeline_cfg=self.pipeline_cfg,
+                        model_by_role=self.model_by_role,
+                        prompt_overrides=self.prompt_overrides,
+                        nl_symbol_trace=None,
+                    )
+                else:
+                    result = runner(problem)
                 outcome, ok = _make_outcome_from_result(
                     task=task,
                     pipeline_mode=self.pipeline_mode,

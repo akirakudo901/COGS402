@@ -19,6 +19,12 @@ Planned derived outputs (to be produced by analysis scripts):
 - model_rankings.json — accuracy ladder from Phase 1
 - failure_mode_profiles.json — aggregates from failures.jsonl
 - representative_examples.json — ids for qualitative follow-up
+
+Phase 2 has two entry points:
+- ``run_where_it_breaks_phase_2`` — full pipeline per example; sweeps ``nl_to_symbol`` and ``selector``.
+- ``run_where_it_breaks_phase_2_reuse_initial_symbolization`` — initial clauses from a prior run's
+  ``examples.jsonl``; selector loop only (``run_symbolic_hybrid_after_nl_async``;
+  ``EvaluationSuite.symbolic_hybrid_initial_by_example_id``).
 """
 
 from __future__ import annotations
@@ -34,6 +40,12 @@ from eval.artifact.artifact_persist import new_run_id, persist_evaluation_run
 from eval.artifact.validate_artifacts import validate_run_dir
 from eval.eval_suite import EvaluationSuite, LLMRole, ModelMapping, ModelSpec, PipelineMode, SimpleEvalTask
 from llm_prolog.pipeline import PipelineConfig
+from llm_prolog.symbolic.types import (
+    AnswerSpec,
+    PipelineResult,
+    Premise,
+    initial_premises_for_hybrid_reuse_from_stored_result,
+)
 
 
 def _default_where_it_breaks_root(project_root: Path) -> Path:
@@ -155,6 +167,106 @@ def _suite_with_role_overrides(
     )
 
 
+def model_spec_nl_to_symbol_from_run_meta(run_meta: Mapping[str, Any]) -> ModelSpec:
+    d = ((run_meta.get("model_specs_by_role") or {}).get("nl_to_symbol")) or {}
+    model = d.get("model")
+    if not model:
+        raise ValueError("run_meta.json missing model_specs_by_role.nl_to_symbol.model")
+    return ModelSpec(
+        model=str(model),
+        temperature=d.get("temperature"),
+        max_tokens=d.get("max_tokens"),
+    )
+
+
+def load_symbolic_hybrid_initial_state_from_run_dir(
+    run_dir: str | Path,
+) -> Tuple[Dict[str, Tuple[List[Premise], AnswerSpec]], Dict[str, Any]]:
+    """
+    Read a persisted evaluation run directory and build per-example (initial premises,
+    answer_spec) for symbolic hybrid reuse.
+
+    Requires full PipelineResult objects in examples.jsonl ``output`` fields.
+    Premises are NL→symbol clauses plus, when that row ``success`` is true and the stored
+    pipeline ``success`` is true, any ``final_termination_check`` linking rules from
+    ``final_premises`` (see ``initial_premises_for_hybrid_reuse_from_stored_result``).
+    """
+    p = Path(run_dir).resolve()
+    meta_path = p / "run_meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"run_meta.json not found under {p}")
+    run_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if run_meta.get("pipeline_mode") != "symbolic_hybrid":
+        raise ValueError(
+            f"Expected pipeline_mode 'symbolic_hybrid', got {run_meta.get('pipeline_mode')!r}"
+        )
+    ex_path = p / "examples.jsonl"
+    if not ex_path.is_file():
+        raise FileNotFoundError(f"examples.jsonl not found under {p}")
+
+    out: Dict[str, Tuple[List[Premise], AnswerSpec]] = {}
+    for line in ex_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        eid = str(row.get("example_id", ""))
+        payload = row.get("output")
+        if not isinstance(payload, dict) or payload.get("result_type") != "PipelineResult":
+            raise ValueError(
+                f"example_id={eid!r}: need output.result_type=='PipelineResult' to reuse premises"
+            )
+        pr = PipelineResult.from_json_dict(payload)
+        example_ok = bool(row.get("success"))
+        initials = initial_premises_for_hybrid_reuse_from_stored_result(
+            pr,
+            example_task_success=example_ok,
+        )
+        if not initials:
+            raise ValueError(f"example_id={eid!r}: no initial NL premises in stored final_premises")
+        out[eid] = (initials, pr.answer_spec)
+    if not out:
+        raise ValueError(f"No examples loaded from {ex_path}")
+    return out, run_meta
+
+
+def _validate_seeds_cover_suite_tasks(
+    suite: EvaluationSuite,
+    seeds: Mapping[str, Any],
+) -> None:
+    for task in suite.tasks:
+        for i, ex in enumerate(task.load_examples()):
+            eid = str(getattr(ex, "id", i))
+            if eid not in seeds:
+                raise KeyError(
+                    f"Initial-state map missing example_id={eid!r} (task {task.task_id!r})"
+                )
+
+
+def _suite_phase2_reuse_nl_from_artifact(
+    *,
+    base_suite: EvaluationSuite,
+    best_spec: ModelSpec,
+    nl_spec_from_artifact: ModelSpec,
+    selector_spec: ModelSpec,
+    seeds: Dict[str, Tuple[List[Premise], AnswerSpec]],
+) -> EvaluationSuite:
+    mapping = ModelMapping.set_spec_to_all_roles(best_spec, base_suite.pipeline_mode)
+    mapping.mapping[LLMRole.NL_TO_SYMBOL] = nl_spec_from_artifact
+    mapping.mapping[LLMRole.SELECTOR] = selector_spec
+    return EvaluationSuite(
+        name=base_suite.name,
+        tasks=base_suite.tasks,
+        pipeline_mode=base_suite.pipeline_mode,
+        model_by_role=mapping,
+        prompt_overrides=base_suite.prompt_overrides,
+        pipeline_cfg=base_suite.pipeline_cfg,
+        keep_all_outcomes=base_suite.keep_all_outcomes,
+        keep_random_k=base_suite.keep_random_k,
+        seed=base_suite.seed,
+        symbolic_hybrid_initial_by_example_id=seeds,
+    )
+
+
 def run_where_it_breaks_phase_1(
     *,
     base_suite: EvaluationSuite,
@@ -194,17 +306,15 @@ def run_where_it_breaks_phase_2(
     max_in_flight: int = 15,
 ) -> List[Path]:
     """
-    Phase 2: staircase analysis.
+    Phase 2 (full pipeline): staircase analysis.
 
-    For each role in {nl_to_symbol, selector}:
-    - fix all roles to best_spec
-    - sweep the target role over ladder_specs (assumed ordered decreasing performance)
+    For each role in ``nl_to_symbol`` and ``selector``:
+    - fix all roles to ``best_spec``
+    - sweep the target role over ``ladder_specs`` (typically ordered worst retained → best fixed)
     """
     run_dirs: List[Path] = []
     dataset_meta = _dataset_meta_from_suite(base_suite)
-
-    roles_to_sweep = ["nl_to_symbol", "selector"]
-    for role_name in roles_to_sweep:
+    for role_name in ("nl_to_symbol", "selector"):
         for k, spec in enumerate(ladder_specs):
             suite = _suite_with_role_overrides(
                 base_suite=base_suite,
@@ -230,6 +340,64 @@ def run_where_it_breaks_phase_2(
                 max_in_flight=max_in_flight,
             )
             run_dirs.append(run_dir)
+    return run_dirs
+
+
+def run_where_it_breaks_phase_2_reuse_initial_symbolization(
+    *,
+    base_suite: EvaluationSuite,
+    best_spec: ModelSpec,
+    ladder_specs: Sequence[ModelSpec],
+    artifacts_root: Path,
+    source_run_dir: str | Path,
+    write_failures: bool = True,
+    max_in_flight: int = 15,
+) -> List[Path]:
+    """
+    Phase 2 with reused initial premises: load ``run_meta.json`` + ``examples.jsonl`` from
+    ``source_run_dir``, take NL→symbol clauses from each stored ``PipelineResult``, and sweep
+    only the **selector** role over ``ladder_specs``. The nl_to_symbol model on the suite matches
+    ``run_meta.json`` (no NL calls in this mode).
+    """
+    run_dirs: List[Path] = []
+    dataset_meta = _dataset_meta_from_suite(base_suite)
+    reuse_path = str(Path(source_run_dir).resolve())
+    seeds, run_meta = load_symbolic_hybrid_initial_state_from_run_dir(reuse_path)
+    nl_spec_from_artifact = model_spec_nl_to_symbol_from_run_meta(run_meta)
+    source_run_id = str(run_meta.get("run_id", ""))
+    _validate_seeds_cover_suite_tasks(base_suite, seeds)
+
+    role_name = "selector"
+    for k, spec in enumerate(ladder_specs):
+        suite = _suite_phase2_reuse_nl_from_artifact(
+            base_suite=base_suite,
+            best_spec=best_spec,
+            nl_spec_from_artifact=nl_spec_from_artifact,
+            selector_spec=spec,
+            seeds=seeds,
+        )
+        suite.name = (
+            f"[where-it-breaks phase-2] reuse_nl sweep={role_name} k={k} "
+            f"{_spec_to_name(spec)} (best={_spec_to_name(best_spec)}) :: {base_suite.name}"
+        )
+        _, run_dir = _run_and_persist(
+            suite=suite,
+            artifacts_root=artifacts_root,
+            variant_id="where_it_breaks_phase_2",
+            dataset_meta=dataset_meta,
+            ablation_overrides={
+                "fixed_best_model": best_spec.model,
+                "swept_role": role_name,
+                "swept_model": spec.model,
+                "swept_index": k,
+                "reuse_initial_symbolization_run_dir": reuse_path,
+                "source_run_id": source_run_id,
+                "nl_to_symbol_model_from_artifact": nl_spec_from_artifact.model,
+            },
+            write_failures=write_failures,
+            max_in_flight=max_in_flight,
+        )
+        run_dirs.append(run_dir)
     return run_dirs
 
 
@@ -746,6 +914,15 @@ if __name__ == "__main__":
         help="Which phase(s) to run.",
     )
     p.add_argument(
+        "--phase2-reuse-run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "For phase 2 only: evaluation run directory (run_meta.json + examples.jsonl) "
+            "to reuse stored initial NL symbolizations; sweeps selector only."
+        ),
+    )
+    p.add_argument(
         "--models",
         type=str,
         required=True,
@@ -884,11 +1061,22 @@ if __name__ == "__main__":
             if ranked_specs:
                 phase2_best_spec = ranked_specs[0]
                 phase2_ladder_specs = ranked_specs[1:]
-        run_where_it_breaks_phase_2(
-            base_suite=base_suite,
-            best_spec=phase2_best_spec,
-            ladder_specs=phase2_ladder_specs,
-            artifacts_root=phase2_root,
-            write_failures=write_failures,
-            max_in_flight=args.max_in_flight,
-        )
+        if args.phase2_reuse_run_dir is not None:
+            run_where_it_breaks_phase_2_reuse_initial_symbolization(
+                base_suite=base_suite,
+                best_spec=phase2_best_spec,
+                ladder_specs=phase2_ladder_specs,
+                artifacts_root=phase2_root,
+                source_run_dir=args.phase2_reuse_run_dir,
+                write_failures=write_failures,
+                max_in_flight=args.max_in_flight,
+            )
+        else:
+            run_where_it_breaks_phase_2(
+                base_suite=base_suite,
+                best_spec=phase2_best_spec,
+                ladder_specs=phase2_ladder_specs,
+                artifacts_root=phase2_root,
+                write_failures=write_failures,
+                max_in_flight=args.max_in_flight,
+            )

@@ -10,6 +10,7 @@ This module wires together:
 
 from __future__ import annotations
 
+import copy
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple
@@ -865,36 +866,33 @@ async def _try_final_termination_check_async(
     return should_stop, inferred_answer, proposed_rule, reason, solution_id
 
 
-def run_symbolic_hybrid_pipeline(
+def run_symbolic_hybrid_after_nl(
     problem: str,
     *,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
     llm: LLMClient,
-    pipeline_cfg : PipelineConfig,
+    pipeline_cfg: PipelineConfig,
     model_by_role: Optional[Mapping[Any, Any]] = None,
     prompt_overrides: Optional[Mapping[Any, str]] = None,
+    nl_symbol_trace: Optional[dict[str, Any]] = None,
 ) -> PipelineResult:
     """
-    Symbolic hybrid pipeline with optional per-component model/prompt overrides.
+    Run selector / inference / optional symbol_to_nl given premises + answer_spec
+    already produced by NL→symbol conversion (or loaded from an artifact).
 
-    Roles:
-    - nl_to_symbol: NL->symbol conversion
-    - selector: premise selection + background premise proposal
-    - symbol_to_nl: NL explanations of symbolic premises
-
-    If roles aren't specified, we fall back to the LLMClient's model & config.
+    `premises` is deep-copied; the symbolic loop mutates the copy in place, matching
+    `run_symbolic_hybrid_pipeline`.
     """
-
     llm_interactions: List[dict[str, Any]] = []
-    nl2sym = _get_model_spec(model_by_role, "nl_to_symbol")
-    premises, answer_spec, nl2sym_trace = convert_problem_to_symbols(
-        problem,
-        llm,
-        model=getattr(nl2sym, "model", None) if nl2sym else None,
-        temperature=getattr(nl2sym, "temperature", None) if nl2sym else None,
-        max_tokens=getattr(nl2sym, "max_tokens", None) if nl2sym else None,
-        system_prompt_override=_get_prompt_override(prompt_overrides, "nl_to_symbol"),
-    )
-    llm_interactions.append(nl2sym_trace)
+    if nl_symbol_trace is not None:
+        llm_interactions.append(nl_symbol_trace)
+    else:
+        llm_interactions.append(
+            {"reused_initial_symbolization": True, "initial_premise_count": len(premises)}
+        )
+
+    premises = copy.deepcopy(premises)
 
     sel_spec = _get_model_spec(model_by_role, "selector")
     success, final_answer, steps, reason = _run_symbolic_steps(
@@ -986,28 +984,27 @@ def run_symbolic_hybrid_pipeline(
     )
 
 
-async def run_symbolic_hybrid_pipeline_async(
+async def run_symbolic_hybrid_after_nl_async(
     problem: str,
     *,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
     llm_exec: LLMExecutor,
     pipeline_cfg: PipelineConfig,
     model_by_role: Optional[Mapping[Any, Any]] = None,
     prompt_overrides: Optional[Mapping[Any, str]] = None,
+    nl_symbol_trace: Optional[dict[str, Any]] = None,
 ) -> PipelineResult:
-    """
-    Async symbolic hybrid pipeline; all LLM calls go through LLMExecutor.
-    """
+    """Async counterpart to `run_symbolic_hybrid_after_nl`."""
     llm_interactions: List[dict[str, Any]] = []
-    nl2sym = _get_model_spec(model_by_role, "nl_to_symbol")
-    premises, answer_spec, nl2sym_trace = await convert_problem_to_symbols_async(
-        problem,
-        llm_exec,
-        model=getattr(nl2sym, "model", None) if nl2sym else None,
-        temperature=getattr(nl2sym, "temperature", None) if nl2sym else None,
-        max_tokens=getattr(nl2sym, "max_tokens", None) if nl2sym else None,
-        system_prompt_override=_get_prompt_override(prompt_overrides, "nl_to_symbol"),
-    )
-    llm_interactions.append(nl2sym_trace)
+    if nl_symbol_trace is not None:
+        llm_interactions.append(nl_symbol_trace)
+    else:
+        llm_interactions.append(
+            {"reused_initial_symbolization": True, "initial_premise_count": len(premises)}
+        )
+
+    premises = copy.deepcopy(premises)
 
     sel_spec = _get_model_spec(model_by_role, "selector")
     success, final_answer, steps, reason = await _run_symbolic_steps_async(
@@ -1096,6 +1093,78 @@ async def run_symbolic_hybrid_pipeline_async(
         final_premises=premises,
         reason=reason,
         llm_interactions=llm_interactions,
+    )
+
+
+def run_symbolic_hybrid_pipeline(
+    problem: str,
+    *,
+    llm: LLMClient,
+    pipeline_cfg: PipelineConfig,
+    model_by_role: Optional[Mapping[Any, Any]] = None,
+    prompt_overrides: Optional[Mapping[Any, str]] = None,
+) -> PipelineResult:
+    """
+    Symbolic hybrid pipeline with optional per-component model/prompt overrides.
+
+    Roles:
+    - nl_to_symbol: NL->symbol conversion
+    - selector: premise selection + background premise proposal
+    - symbol_to_nl: NL explanations of symbolic premises
+
+    If roles aren't specified, we fall back to the LLMClient's model & config.
+    """
+
+    nl2sym = _get_model_spec(model_by_role, "nl_to_symbol")
+    premises, answer_spec, nl2sym_trace = convert_problem_to_symbols(
+        problem,
+        llm,
+        model=getattr(nl2sym, "model", None) if nl2sym else None,
+        temperature=getattr(nl2sym, "temperature", None) if nl2sym else None,
+        max_tokens=getattr(nl2sym, "max_tokens", None) if nl2sym else None,
+        system_prompt_override=_get_prompt_override(prompt_overrides, "nl_to_symbol"),
+    )
+    return run_symbolic_hybrid_after_nl(
+        problem,
+        premises=premises,
+        answer_spec=answer_spec,
+        llm=llm,
+        pipeline_cfg=pipeline_cfg,
+        model_by_role=model_by_role,
+        prompt_overrides=prompt_overrides,
+        nl_symbol_trace=nl2sym_trace,
+    )
+
+
+async def run_symbolic_hybrid_pipeline_async(
+    problem: str,
+    *,
+    llm_exec: LLMExecutor,
+    pipeline_cfg: PipelineConfig,
+    model_by_role: Optional[Mapping[Any, Any]] = None,
+    prompt_overrides: Optional[Mapping[Any, str]] = None,
+) -> PipelineResult:
+    """
+    Async symbolic hybrid pipeline; all LLM calls go through LLMExecutor.
+    """
+    nl2sym = _get_model_spec(model_by_role, "nl_to_symbol")
+    premises, answer_spec, nl2sym_trace = await convert_problem_to_symbols_async(
+        problem,
+        llm_exec,
+        model=getattr(nl2sym, "model", None) if nl2sym else None,
+        temperature=getattr(nl2sym, "temperature", None) if nl2sym else None,
+        max_tokens=getattr(nl2sym, "max_tokens", None) if nl2sym else None,
+        system_prompt_override=_get_prompt_override(prompt_overrides, "nl_to_symbol"),
+    )
+    return await run_symbolic_hybrid_after_nl_async(
+        problem,
+        premises=premises,
+        answer_spec=answer_spec,
+        llm_exec=llm_exec,
+        pipeline_cfg=pipeline_cfg,
+        model_by_role=model_by_role,
+        prompt_overrides=prompt_overrides,
+        nl_symbol_trace=nl2sym_trace,
     )
 
 
