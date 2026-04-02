@@ -1,0 +1,263 @@
+Saved LLM interactions to /Users/akirakudo/Desktop/code/python/Class/2025W2/COGS402-wt-prompt-append-for-caching/eval/compare_prompt_format/compare_selector_cache_runs/llm_interactions_legacy_rebuild.json
+
+=== Selector user_prompt deltas (legacy_rebuild) ===
+========================================================================
+selector user_prompt — base + per-step deltas (prefix extension)
+========================================================================
+--- system_prompt ---
+
+You are a symbolic reasoning planner working over a Prolog‑style theory.
+
+You are given:
+- A natural language problem with a question or goal.
+- A list of existing premises (facts and rules) with IDs.
+- A target answer head predicate we ultimately want to prove.
+- A (possibly empty) list of failed past reasoning steps grouped by reason.
+
+Your task for each step:
+
+
+- State what new premise you intend for the inference engine to derive. This premise 
+  must be new among existing premises.
+- Indicate whether this new premise is directly the answer head goal.
+- Choose exactly ONE **consumer** rule (a clause with a head and body) by `selected_rule_id`.
+- Choose ONE OR MORE **producers** by listing their premise IDs in `selected_fact_ids` in the **order**
+  they should be applied. Each producer may be a **fact** (head only) or a **rule** (head and body).
+  For each goal position in the consumer, in order, the inference engine consumes the **first** producer 
+  in the remaining producers' 'pool' that unifies with that goal. Producers used for a goal are removed from the pool.
+- You MUST NOT choose an order of premises that has been previously combined to produce an existing premise.
+- Use the failed-step history to avoid repeating choices that failed for known reasons.
+
+Output MUST be a single JSON object with the fields:
+
+
+- "proposed_new_premise": string or null (a Prolog‑style clause WITHOUT
+  needing to be valid; this is an intention. It must be new from existing premises).
+- "is_new_proposal": boolean.
+- "is_answer_goal": boolean.
+- "selected_rule_id": integer ID of the **consumer** rule premise for this step.
+- "selected_fact_ids": ordered list of integer IDs of **producer** premises (each may be a fact or a
+  rule). Order matters: the engine matches slot 0 against producers in this order, then slot 1 against
+  what remains, and so on.
+
+
+- Generate multiple distinct candidate next steps in decreasing order of likelihood.
+- Each candidate represents ONE planned inference attempt and must include:
+  - "proposed_new_premise": a premise you intend to derive (string; must be new among existing premises)
+  - "is_answer_goal": boolean (true if this premise is directly the answer head goal)
+  - "background_premises": optional list of facts/rules (strings) ending with a period
+  - "selected_rule_id": integer ID of exactly ONE consumer rule
+  - "selected_fact_ids": ordered list of integer IDs of ONE OR MORE producers
+- Each candidate MUST be distinct from all others (not the same exact combination of the above fields).
+
+If generating multiple candidates, output MUST be a single JSON object with:
+- "candidates": a list of candidate objects, ordered by likelihood (best first).
+
+--- user_prompt BASE (step_index=0) — full initial ---
+Problem:
+Nick has 60 cans. Each can takes up 30 square inches of space before being compacted and 20% of that amount after being compacted. How much space do all the cans take up after being compacted?
+
+Current premises (by ID):
+1: cans(nick, 60). # Nick has 60 cans.
+2: space_per_can_before(30). # Each can takes up 30 square inches before compaction.
+3: compaction_ratio(0.2). # After compaction, each can takes up 20% of the original space.
+4: space_per_can_after(Spaceafter) :- space_per_can_before(Spacebefore), compaction_ratio(Ratio), is(Spaceafter, *(Spacebefore, Ratio)). # Calculate space per can after compaction by multiplying before space by compaction ratio.
+5: total_space_after(Person, Totalspace) :- cans(Person, Count), space_per_can_after(Spaceafter), is(Totalspace, *(Count, Spaceafter)). # Calculate total space after compaction by multiplying number of cans by space per can after compaction.
+6: answer(Totalspace) :- total_space_after(nick, Totalspace). # Define the answer as the total space all of Nick's cans take up after compaction.
+
+Answer head predicate:
+answer(Totalspace)
+
+Decide the next reasoning step following the instructions.
+
+Generate candidates:
+- Generate exactly 3 candidate(s).
+- Each candidate must be distinct from the others.
+
+
+--- user_prompt (step_index=1) — previous user_prompt is NOT a prefix; full prompt follows ---
+Problem:
+Nick has 60 cans. Each can takes up 30 square inches of space before being compacted and 20% of that amount after being compacted. How much space do all the cans take up after being compacted?
+
+Current premises (by ID):
+1: cans(nick, 60). # Nick has 60 cans.
+2: space_per_can_before(30). # Each can takes up 30 square inches before compaction.
+3: compaction_ratio(0.2). # After compaction, each can takes up 20% of the original space.
+4: space_per_can_after(Spaceafter) :- space_per_can_before(Spacebefore), compaction_ratio(Ratio), is(Spaceafter, *(Spacebefore, Ratio)). # Calculate space per can after compaction by multiplying before space by compaction ratio.
+5: total_space_after(Person, Totalspace) :- cans(Person, Count), space_per_can_after(Spaceafter), is(Totalspace, *(Count, Spaceafter)). # Calculate total space after compaction by multiplying number of cans by space per can after compaction.
+6: answer(Totalspace) :- total_space_after(nick, Totalspace). # Define the answer as the total space all of Nick's cans take up after compaction.
+7: space_per_can_after(6).
+  (from premises 4, 2, 3)
+
+Answer head predicate:
+answer(Totalspace)
+
+Decide the next reasoning step following the instructions.
+
+Generate candidates:
+- Generate exactly 3 candidate(s).
+- Each candidate must be distinct from the others.
+
+
+--- user_prompt (step_index=2) — previous user_prompt is NOT a prefix; full prompt follows ---
+Problem:
+Nick has 60 cans. Each can takes up 30 square inches of space before being compacted and 20% of that amount after being compacted. How much space do all the cans take up after being compacted?
+
+Current premises (by ID):
+1: cans(nick, 60). # Nick has 60 cans.
+2: space_per_can_before(30). # Each can takes up 30 square inches before compaction.
+3: compaction_ratio(0.2). # After compaction, each can takes up 20% of the original space.
+4: space_per_can_after(Spaceafter) :- space_per_can_before(Spacebefore), compaction_ratio(Ratio), is(Spaceafter, *(Spacebefore, Ratio)). # Calculate space per can after compaction by multiplying before space by compaction ratio.
+5: total_space_after(Person, Totalspace) :- cans(Person, Count), space_per_can_after(Spaceafter), is(Totalspace, *(Count, Spaceafter)). # Calculate total space after compaction by multiplying number of cans by space per can after compaction.
+6: answer(Totalspace) :- total_space_after(nick, Totalspace). # Define the answer as the total space all of Nick's cans take up after compaction.
+7: space_per_can_after(6).
+  (from premises 4, 2, 3)
+8: total_space_after(nick, 360).
+  (from premises 5, 1, 7)
+
+Answer head predicate:
+answer(Totalspace)
+
+Decide the next reasoning step following the instructions.
+
+Generate candidates:
+- Generate exactly 3 candidate(s).
+- Each candidate must be distinct from the others.
+
+
+
+Saved LLM interactions to /Users/akirakudo/Desktop/code/python/Class/2025W2/COGS402-wt-prompt-append-for-caching/eval/compare_prompt_format/compare_selector_cache_runs/llm_interactions_append_cache.json
+
+=== Selector user_prompt deltas (append_cache) ===
+========================================================================
+selector user_prompt — base + per-step deltas (prefix extension)
+========================================================================
+--- system_prompt ---
+
+You are a symbolic reasoning planner working over a Prolog‑style theory.
+
+You are given:
+- A natural language problem with a question or goal.
+- A list of existing premises (facts and rules) with IDs.
+- A target answer head predicate we ultimately want to prove.
+- A (possibly empty) list of failed past reasoning steps grouped by reason.
+
+Your task for each step:
+
+
+- State what new premise you intend for the inference engine to derive. This premise 
+  must be new among existing premises.
+- Indicate whether this new premise is directly the answer head goal.
+- Choose exactly ONE **consumer** rule (a clause with a head and body) by `selected_rule_id`.
+- Choose ONE OR MORE **producers** by listing their premise IDs in `selected_fact_ids` in the **order**
+  they should be applied. Each producer may be a **fact** (head only) or a **rule** (head and body).
+  For each goal position in the consumer, in order, the inference engine consumes the **first** producer 
+  in the remaining producers' 'pool' that unifies with that goal. Producers used for a goal are removed from the pool.
+- You MUST NOT choose an order of premises that has been previously combined to produce an existing premise.
+- Use the failed-step history to avoid repeating choices that failed for known reasons.
+
+Output MUST be a single JSON object with the fields:
+
+
+- "proposed_new_premise": string or null (a Prolog‑style clause WITHOUT
+  needing to be valid; this is an intention. It must be new from existing premises).
+- "is_new_proposal": boolean.
+- "is_answer_goal": boolean.
+- "selected_rule_id": integer ID of the **consumer** rule premise for this step.
+- "selected_fact_ids": ordered list of integer IDs of **producer** premises (each may be a fact or a
+  rule). Order matters: the engine matches slot 0 against producers in this order, then slot 1 against
+  what remains, and so on.
+
+
+- Generate multiple distinct candidate next steps in decreasing order of likelihood.
+- Each candidate represents ONE planned inference attempt and must include:
+  - "proposed_new_premise": a premise you intend to derive (string; must be new among existing premises)
+  - "is_answer_goal": boolean (true if this premise is directly the answer head goal)
+  - "background_premises": optional list of facts/rules (strings) ending with a period
+  - "selected_rule_id": integer ID of exactly ONE consumer rule
+  - "selected_fact_ids": ordered list of integer IDs of ONE OR MORE producers
+- Each candidate MUST be distinct from all others (not the same exact combination of the above fields).
+
+If generating multiple candidates, output MUST be a single JSON object with:
+- "candidates": a list of candidate objects, ordered by likelihood (best first).
+
+--- user_prompt BASE (step_index=0) — full initial ---
+After each step, we append **only** its outcome: one new premise (success) or one latest failed attempt.
+
+**Problem**
+Nick has 60 cans. Each can takes up 30 square inches of space before being compacted and 20% of that amount after being compacted. How much space do all the cans take up after being compacted?
+
+**Answer head predicate**
+total_space_after(Answer)
+
+**Premises (by ID)**
+1: cans(nick, 60). # Nick has 60 cans.
+2: space_per_can_before(30). # Each can takes up 30 square inches before compacting.
+3: compacted_ratio(0.2). # After compacting, each can takes up 20% of the original space.
+4: space_per_can_after(Spaceafter) :- space_per_can_before(Spacebefore), compacted_ratio(Ratio), is(Spaceafter, *(Spacebefore, Ratio)). # Calculate the space each can takes after compacting by multiplying original space by 0.2.
+5: total_space_after(Totalspace) :- cans(nick, Count), space_per_can_after(Spaceafter), is(Totalspace, *(Count, Spaceafter)). # Calculate total space after compacting by multiplying number of cans by space per can after compacting.
+
+
+Decide the next reasoning step following the instructions.
+
+Generate candidates:
+- Generate exactly 3 candidate(s).
+- Each candidate must be distinct from the others.
+
+
+--- user_prompt (step_index=1) — previous user_prompt is NOT a prefix; full prompt follows ---
+After each step, we append **only** its outcome: one new premise (success) or one latest failed attempt.
+
+**Problem**
+Nick has 60 cans. Each can takes up 30 square inches of space before being compacted and 20% of that amount after being compacted. How much space do all the cans take up after being compacted?
+
+**Answer head predicate**
+total_space_after(Answer)
+
+**Premises (by ID)**
+1: cans(nick, 60). # Nick has 60 cans.
+2: space_per_can_before(30). # Each can takes up 30 square inches before compacting.
+3: compacted_ratio(0.2). # After compacting, each can takes up 20% of the original space.
+4: space_per_can_after(Spaceafter) :- space_per_can_before(Spacebefore), compacted_ratio(Ratio), is(Spaceafter, *(Spacebefore, Ratio)). # Calculate the space each can takes after compacting by multiplying original space by 0.2.
+5: total_space_after(Totalspace) :- cans(nick, Count), space_per_can_after(Spaceafter), is(Totalspace, *(Count, Spaceafter)). # Calculate total space after compacting by multiplying number of cans by space per can after compacting.
+## Outcome 1, newly derived:
+
+6: space_per_can_after(6).
+  (from premises 4, 2, 3)
+
+
+Decide the next reasoning step following the instructions.
+
+Generate candidates:
+- Generate exactly 3 candidate(s).
+- Each candidate must be distinct from the others.
+
+
+
+=== legacy_rebuild ===
+success=True reason=answer_head_matched
+n_requests=4
+cost_usd=0.00248400
+prompt_tokens=3258
+completion_tokens=738
+total_tokens=3996
+cached_tokens=0
+cache_write_tokens=0
+cached/prompt=0.0000
+
+=== append_cache ===
+success=True reason=answer_head_matched
+n_requests=3
+cost_usd=0.00187600
+prompt_tokens=2270
+completion_tokens=605
+total_tokens=2875
+cached_tokens=0
+cache_write_tokens=0
+cached/prompt=0.0000
+
+=== Comparison (append_cache vs legacy_rebuild) ===
+cost_delta_usd=-0.00060800
+cost_reduction_pct=24.48%
+cached_tokens_delta=0
+cached_ratio_delta=0.0000
