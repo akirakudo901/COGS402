@@ -519,6 +519,32 @@ def initial_nl_symbol_premises_from_final(final_premises: List[Premise]) -> List
     )
 
 
+def initial_premises_for_hybrid_reuse_from_stored_result(
+    pr: PipelineResult,
+    *,
+    example_task_success: bool,
+) -> List[Premise]:
+    """
+    Premises used to seed symbolic-hybrid re-runs from a persisted ``PipelineResult``.
+
+    Starts with NL→symbol premises (``initial_nl_symbol_premises_from_final``). When
+    ``pr.success`` and ``example_task_success`` are both true, also includes every premise
+    in ``pr.final_premises`` whose source is ``final_termination_check`` (the linking rule
+    appended by the post-loop termination checker). If that path produced a validator-correct
+    answer, we treat that rule as part of the trusted initial theory for reuse.
+    """
+    base = list(initial_nl_symbol_premises_from_final(pr.final_premises))
+    if not (pr.success and example_task_success):
+        return sorted(base, key=lambda p: p.id)
+    extra = [p for p in pr.final_premises if (p.source or "") == "final_termination_check"]
+    if not extra:
+        return sorted(base, key=lambda p: p.id)
+    by_id: Dict[int, Premise] = {p.id: p for p in base}
+    for p in extra:
+        by_id[p.id] = p
+    return sorted(by_id.values(), key=lambda p: p.id)
+
+
 def _append_new_premises_report_lines(
     lines: List[str],
     *,
