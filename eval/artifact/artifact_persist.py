@@ -295,6 +295,14 @@ def build_output_summary(result: Any, pipeline_mode: PipelineMode) -> Dict[str, 
             if last_new is not None:
                 src = getattr(last_new, "source", None)
                 termination_rule_source = src if isinstance(src, str) else None
+        if termination_rule_source is None:
+            fps = getattr(result, "final_premises", None)
+            if isinstance(fps, list):
+                for p in reversed(fps):
+                    src = getattr(p, "source", None)
+                    if src == "wib-phase-1-termination-checker":
+                        termination_rule_source = src
+                        break
         termination_route = None
         if reason == "termination_checker_verified":
             termination_route = "inline_selector_termination_check"
@@ -304,6 +312,12 @@ def build_output_summary(result: Any, pipeline_mode: PipelineMode) -> Dict[str, 
             termination_route = "answer_head_match"
         elif reason == "max_steps_exhausted":
             termination_route = "max_steps_exhausted"
+        elif reason == "wib_phase1_nl_symbol_well_defined":
+            termination_route = "wib_phase1_nl_symbol_well_defined"
+        elif reason == "wib_phase1_tc_repair":
+            termination_route = "wib_phase1_tc_repair"
+        elif isinstance(reason, str) and reason.startswith("wib_phase1_"):
+            termination_route = "wib_phase1_well_defined_check_failed"
         if hasattr(result, "extract_answer_constant"):
             try:
                 ext = result.extract_answer_constant()
@@ -495,6 +509,7 @@ def _symbolic_hybrid_llm_call_samples_for_run(
             latest_sel: Optional[Dict[str, Any]] = None
             max_step: Optional[int] = None
             final_tc: Optional[Dict[str, Any]] = None
+            wib_p1_tc: Optional[Dict[str, Any]] = None
             sym2nl_trace: Optional[Dict[str, Any]] = None
 
             for it_w in interactions:
@@ -503,6 +518,8 @@ def _symbolic_hybrid_llm_call_samples_for_run(
                 comp = it_w.get("component")
                 if comp == "nl_to_symbol" and nl_trace is None:
                     nl_trace = it_w
+                elif comp == "wib_phase_1_termination_check" and wib_p1_tc is None:
+                    wib_p1_tc = it_w
                 elif comp == "selector_select_next_step":
                     si = it_w.get("step_index")
                     try:
@@ -523,6 +540,7 @@ def _symbolic_hybrid_llm_call_samples_for_run(
                 "nl_to_symbol": _pack_hybrid_trace(nl_trace, eid),
                 "selector_latest_step": _pack_hybrid_trace(latest_sel, eid, step_index=max_step),
                 "final_termination_check": _pack_hybrid_trace(final_tc, eid),
+                "wib_phase_1_termination_check": _pack_hybrid_trace(wib_p1_tc, eid),
                 "symbol_to_nl": _pack_hybrid_trace(sym2nl_trace, eid),
             }
     return None

@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Optional, TypeVar
 
-from llm_prolog.llm_client.llm_client import LLMClient, load_openrouter_config
+from llm_prolog.llm_client.llm_client import LLMClient
+from llm_prolog.llm_client.config import load_openrouter_config
 from llm_prolog.pipeline import PipelineConfig, run_symbolic_hybrid_pipeline
 
 

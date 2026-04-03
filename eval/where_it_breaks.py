@@ -4,6 +4,14 @@ Where-it-breaks experiment scaffolding (step 3e).
 This module encodes variant generation for the staircase protocol and documents
 what downstream analysis should read from persisted artifacts.
 
+Phase 1 has two modes:
+- ``run_where_it_breaks_phase_1`` — full symbolic-hybrid pipeline per ladder model (legacy).
+- ``run_where_it_breaks_phase_1_well_defined_symbol`` — NL→symbol only per model, SWI
+  well-defined check (``nl_symbol_conversion_assess``), optional LLM termination repair
+  (``check_wib_phase_1_termination_async`` in ``llm_prolog.selector``), then persist.
+  Use a dedicated ``artifacts_root`` subdirectory (e.g. ``phase-1-wd/``) or filter
+  ``run_meta.ablation.variant_id`` when ranking so results do not mix with legacy Phase 1.
+
 Logged / persisted per run (see eval.artifact):
 - run_meta.json: run_id, pipeline_mode, dataset (subset_spec incl. example_ids), pipeline_config,
   seed, model_specs_by_role, ablation, code_version, suite_name, overall_accuracy,
@@ -32,18 +40,50 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
+import random
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from eval import GPT_4_1_MINI
 from eval.artifact.analyze_artifacts import _get_model_family_and_name
 from eval.artifact.artifact_persist import new_run_id, persist_evaluation_run
 from eval.artifact.validate_artifacts import validate_run_dir
-from eval.eval_suite import EvaluationSuite, LLMRole, ModelMapping, ModelSpec, PipelineMode, SimpleEvalTask
+from eval.eval_suite import (
+    EvaluationSuite,
+    ExampleOutcome,
+    LLMRole,
+    ModelMapping,
+    ModelSpec,
+    PipelineMode,
+    SimpleEvalTask,
+    SuiteReport,
+    TaskReport,
+    _collect_outcomes_in_order,
+    _get_example_fields,
+    _make_outcome_from_exception,
+    _make_outcome_from_result,
+    _placeholder_outcome,
+)
+from eval.metrics.well_defined_nl_symbol import (
+    NlSymbolWellDefinedOutcome,
+    nl_symbol_conversion_assess,
+)
+from llm_prolog.llm_client.async_llm_client import AsyncLLMClient
+from llm_prolog.llm_executor import LLMExecutor
+from llm_prolog.nl_symbol_converter import convert_problem_to_symbols_async
 from llm_prolog.pipeline import PipelineConfig
+from llm_prolog.selector import check_wib_phase_1_termination_async
 from llm_prolog.symbolic.types import (
     AnswerSpec,
+    Fact,
     PipelineResult,
+    Predicate,
+    PredicateArg,
     Premise,
+    Term,
     initial_premises_for_hybrid_reuse_from_stored_result,
 )
 
@@ -296,6 +336,371 @@ def run_where_it_breaks_phase_1(
     return run_dirs
 
 
+def _wib_ground_truth_value(ex: Any, expected_fallback: str) -> Any:
+    g = getattr(ex, "ground_truth", None)
+    if g is not None:
+        return g
+    try:
+        return float(expected_fallback)
+    except (TypeError, ValueError):
+        return expected_fallback
+
+
+def _wib_constant_name_for_ground_truth(gt: Any) -> str:
+    if isinstance(gt, float) and math.isfinite(gt) and gt == round(gt):
+        return str(int(gt))
+    if isinstance(gt, int):
+        return str(gt)
+    if isinstance(gt, float) and math.isfinite(gt):
+        return str(gt)
+    s = str(gt).strip()
+    return s if s else "0"
+
+
+def _wib_substitute_var_in_predicate(pred: Predicate, var_name: str, const_name: str) -> Predicate:
+    new_args: List[PredicateArg] = []
+    for a in pred.args:
+        if isinstance(a, Term):
+            if a.is_variable and a.name == var_name:
+                new_args.append(Term.constant(const_name))
+            else:
+                new_args.append(a)
+        else:
+            new_args.append(_wib_substitute_var_in_predicate(a, var_name, const_name))
+    return Predicate(name=pred.name, args=tuple(new_args))
+
+
+def _wib_synthetic_answer_fact_premise(answer_spec: AnswerSpec, ground_truth: Any) -> Premise:
+    cname = _wib_constant_name_for_ground_truth(ground_truth)
+    pred = _wib_substitute_var_in_predicate(answer_spec.target, answer_spec.variable_name, cname)
+    return Premise(
+        id=-1,
+        clause=Fact(predicate=pred),
+        nl=None,
+        source="wib_phase1_synthetic_answer",
+    )
+
+
+def _pipeline_result_wib_phase1_well_defined(
+    *,
+    initial_premises: List[Premise],
+    answer_spec: AnswerSpec,
+    ground_truth: Any,
+    task_success: bool,
+    reason: str,
+    llm_interactions: List[Dict[str, Any]],
+    repair_premise: Optional[Premise],
+) -> PipelineResult:
+    final = list(initial_premises)
+    if repair_premise is not None:
+        final.append(repair_premise)
+    final_sorted = sorted(final, key=lambda p: p.id)
+    ap: Optional[Premise] = None
+    if task_success:
+        ap = _wib_synthetic_answer_fact_premise(answer_spec, ground_truth)
+    return PipelineResult(
+        success=task_success,
+        answer_premise=ap,
+        steps=[],
+        answer_spec=answer_spec,
+        final_premises=final_sorted,
+        reason=reason,
+        llm_interactions=llm_interactions,
+    )
+
+
+def _wib_reason_from_nl_outcome(o: NlSymbolWellDefinedOutcome, *, prefix: str) -> str:
+    if o.ok:
+        return f"{prefix}_success"
+    return f"{prefix}_{o.category.value}"
+
+
+async def _run_wib_phase1_task_async(
+    task: SimpleEvalTask,
+    suite: EvaluationSuite,
+    llm_exec: LLMExecutor,
+    *,
+    tc_spec: ModelSpec,
+    max_tc_candidates: int,
+    max_in_flight: int,
+    print_progress: bool,
+) -> TaskReport:
+    examples = list(task.load_examples())
+    total = len(examples)
+    ordered_outcomes: List[Optional[ExampleOutcome]] = [None] * total
+    ordered_correct: List[bool] = [False] * total
+
+    async def run_one(i: int, ex: Any) -> Tuple[int, ExampleOutcome, bool]:
+        problem, expected, example_id = _get_example_fields(task, ex, i)
+        gt = _wib_ground_truth_value(ex, expected)
+        nl_spec = suite.model_by_role[LLMRole.NL_TO_SYMBOL]
+        try:
+            if print_progress:
+                print(
+                    f"Starting [wib phase1 wd] task {task.task_id}, example {example_id} "
+                    f"at: {datetime.now().strftime('%H:%M:%S')}."
+                )
+            po = suite.prompt_overrides
+            nl_prompt_ov = po.get(LLMRole.NL_TO_SYMBOL) if po else None
+            initial_premises, answer_spec, nl_trace = await convert_problem_to_symbols_async(
+                problem,
+                llm_exec,
+                model=getattr(nl_spec, "model", None),
+                temperature=getattr(nl_spec, "temperature", None),
+                max_tokens=getattr(nl_spec, "max_tokens", None),
+                system_prompt_override=nl_prompt_ov if isinstance(nl_prompt_ov, str) else None,
+            )
+            initial = list(initial_premises)
+            interactions: List[Dict[str, Any]] = [nl_trace]
+            wd0 = nl_symbol_conversion_assess(initial, answer_spec, gt)
+
+            repair_premise: Optional[Premise] = None
+            if wd0.ok:
+                pr = _pipeline_result_wib_phase1_well_defined(
+                    initial_premises=initial,
+                    answer_spec=answer_spec,
+                    ground_truth=gt,
+                    task_success=True,
+                    reason="wib_phase1_nl_symbol_well_defined",
+                    llm_interactions=interactions,
+                    repair_premise=None,
+                )
+            else:
+                aux_list, tc_trace = await check_wib_phase_1_termination_async(
+                    problem,
+                    initial,
+                    answer_spec,
+                    llm_exec=llm_exec,
+                    max_candidates=max_tc_candidates,
+                    model=getattr(tc_spec, "model", None),
+                    temperature=getattr(tc_spec, "temperature", None),
+                    max_tokens=getattr(tc_spec, "max_tokens", None),
+                )
+                interactions.append(tc_trace)
+                last_wd = wd0
+                ok_after = False
+                for aux in aux_list:
+                    combined = initial + [aux]
+                    wd_try = nl_symbol_conversion_assess(combined, answer_spec, gt)
+                    last_wd = wd_try
+                    if wd_try.ok:
+                        ok_after = True
+                        repair_premise = aux
+                        break
+                if ok_after and repair_premise is not None:
+                    pr = _pipeline_result_wib_phase1_well_defined(
+                        initial_premises=initial,
+                        answer_spec=answer_spec,
+                        ground_truth=gt,
+                        task_success=True,
+                        reason="wib_phase1_tc_repair",
+                        llm_interactions=interactions,
+                        repair_premise=repair_premise,
+                    )
+                else:
+                    pr = _pipeline_result_wib_phase1_well_defined(
+                        initial_premises=initial,
+                        answer_spec=answer_spec,
+                        ground_truth=gt,
+                        task_success=False,
+                        reason=_wib_reason_from_nl_outcome(last_wd, prefix="wib_phase1"),
+                        llm_interactions=interactions,
+                        repair_premise=None,
+                    )
+
+            outcome, ok = _make_outcome_from_result(
+                task=task,
+                pipeline_mode=suite.pipeline_mode,
+                ex=ex,
+                idx=i,
+                example_id=example_id,
+                problem=problem,
+                expected=expected,
+                result=pr,
+            )
+            if print_progress:
+                print(
+                    f"Completed [wib phase1 wd] task {task.task_id}, example {example_id} "
+                    f"at: {datetime.now().strftime('%H:%M:%S')}."
+                )
+        except Exception as e:
+            import traceback
+
+            tb_str = traceback.format_exc()
+            outcome, ok = _make_outcome_from_exception(
+                idx=i,
+                example_id=example_id,
+                problem=problem,
+                expected=expected,
+                exc=Exception(f"{e}\nStack trace:\n{tb_str}"),
+            )
+            if print_progress:
+                print(
+                    f"Failed [wib phase1 wd] task {task.task_id}, example {example_id} "
+                    f"at: {datetime.now().strftime('%H:%M:%S')}."
+                )
+        return i, outcome, ok
+
+    tasks = [run_one(i, ex) for i, ex in enumerate(examples)]
+    results = await asyncio.gather(*tasks, return_exceptions=False)
+    for i, outcome, ok in results:
+        ordered_outcomes[i] = outcome
+        ordered_correct[i] = ok
+
+    correct = sum(1 for x in ordered_correct if x)
+    rng = random.Random(suite.seed)
+    outcomes_collect = _collect_outcomes_in_order(
+        outcomes_in_order=[ordered_outcomes[i] or _placeholder_outcome(i) for i in range(total)],
+        rng=rng,
+        keep_all_outcomes=suite.keep_all_outcomes,
+        keep_random_k=suite.keep_random_k,
+    )
+    accuracy = (correct / total) if total else 0.0
+    return TaskReport(
+        task_id=task.task_id,
+        pipeline_mode=suite.pipeline_mode,
+        total=total,
+        correct=correct,
+        accuracy=accuracy,
+        outcomes=tuple(outcomes_collect),
+        extra_stats={"max_in_flight": max_in_flight},
+    )
+
+
+async def _run_wib_phase1_suite_async(
+    suite: EvaluationSuite,
+    *,
+    tc_spec: ModelSpec,
+    max_tc_candidates: int,
+    max_in_flight: int,
+    print_progress: bool,
+    show_openrouter_balance: bool,
+) -> SuiteReport:
+    async with AsyncLLMClient() as client:
+        client.reset_usage_stats()
+        usage_before: Dict[str, Any] = {}
+        if show_openrouter_balance:
+            usage_before = dict(client.get_usage_stats())
+            print(f"[LLM usage] Before suite run: {usage_before}")
+        wall0 = time.perf_counter()
+        started_at = datetime.now(timezone.utc).isoformat()
+        executor = LLMExecutor(client, max_in_flight=max(1, max_in_flight))
+        treps: List[TaskReport] = []
+        for task in suite.tasks:
+            treps.append(
+                await _run_wib_phase1_task_async(
+                    task,
+                    suite,
+                    executor,
+                    tc_spec=tc_spec,
+                    max_tc_candidates=max_tc_candidates,
+                    max_in_flight=max_in_flight,
+                    print_progress=print_progress,
+                )
+            )
+        finished_at = datetime.now(timezone.utc).isoformat()
+        duration_s = time.perf_counter() - wall0
+        llm_usage = client.get_usage_stats()
+        if show_openrouter_balance:
+            print(f"[LLM usage] After suite run: {llm_usage}")
+            delta = {
+                k: float(llm_usage.get(k, 0)) - float(usage_before.get(k, 0))
+                for k in (
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "total_tokens",
+                    "n_requests",
+                    "cost_usd",
+                )
+            }
+            print(
+                f"[LLM usage] This suite — cost_usd={delta.get('cost_usd', 0):.6f}, "
+                f"total_tokens={delta.get('total_tokens', 0)}, n_requests={delta.get('n_requests', 0)}"
+            )
+        run_metadata: Dict[str, Any] = {
+            "run_timing": {
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "duration_seconds": round(duration_s, 6),
+            },
+            "llm_usage": llm_usage,
+            "max_in_flight": max_in_flight,
+        }
+        return SuiteReport(
+            pipeline_mode=suite.pipeline_mode,
+            task_reports=tuple(treps),
+            run_metadata=run_metadata,
+        )
+
+
+def run_where_it_breaks_phase_1_well_defined_symbol(
+    *,
+    base_suite: EvaluationSuite,
+    ladder_specs: Sequence[ModelSpec],
+    artifacts_root: Path,
+    termination_checker_spec: ModelSpec | None = None,
+    max_tc_candidates: int = 5,
+    write_failures: bool = True,
+    max_in_flight: int = 15,
+) -> List[Path]:
+    """
+    Phase 1 (well-defined variant): NL→symbol per ladder model, SWI well-defined metric, optional
+    ``check_wib_phase_1_termination_async`` repair, then persist. Does not run the selector loop.
+
+    Persist ``ablation.variant_id`` is ``where_it_breaks_phase_1_well_defined`` (distinct from legacy
+    ``where_it_breaks_phase_1``). Prefer writing under e.g. ``.../phase-1-wd/`` so
+    ``get_phase1_models_ordered_by_accuracy`` on a mixed tree does not blend modes unless filtered.
+    """
+    tc = termination_checker_spec or ModelSpec(model=GPT_4_1_MINI, temperature=0.5, max_tokens=None)
+    dataset_meta = _dataset_meta_from_suite(base_suite)
+
+    async def _run_all() -> List[Path]:
+        run_dirs: List[Path] = []
+        for spec in ladder_specs:
+            suite = _suite_with_all_roles_set_to(base_suite=base_suite, spec=spec)
+            suite.name = (
+                f"[where-it-breaks phase-1 well-defined] {_spec_to_name(spec)} :: {base_suite.name}"
+            )
+            report = await _run_wib_phase1_suite_async(
+                suite,
+                tc_spec=tc,
+                max_tc_candidates=max_tc_candidates,
+                max_in_flight=max_in_flight,
+                print_progress=True,
+                show_openrouter_balance=True,
+            )
+            _roles = suite.pipeline_mode.get_required_roles()
+            _model = suite.model_by_role[_roles[0]].model if _roles else ""
+            run_id = new_run_id(_model)
+            run_dir = persist_evaluation_run(
+                artifacts_root=artifacts_root.resolve(),
+                run_id=run_id,
+                suite=suite,
+                suite_report=report,
+                dataset=dataset_meta,
+                ablation={
+                    "variant_id": "where_it_breaks_phase_1_well_defined",
+                    "component_overrides": {
+                        "all_roles": spec.model,
+                        "termination_checker_model": tc.model,
+                        "max_tc_candidates": max_tc_candidates,
+                    },
+                },
+                write_failures=write_failures,
+            )
+            print(f"Artifacts written to: {run_dir}")
+            ok, errs = validate_run_dir(run_dir)
+            if not ok:
+                for err in errs:
+                    print(f"[artifact validation] {err}")
+                raise RuntimeError(f"Artifact validation failed for run directory: {run_dir}")
+            print("Artifact validation passed.")
+            run_dirs.append(run_dir)
+        return run_dirs
+
+    return asyncio.run(_run_all())
+
+
 def run_where_it_breaks_phase_2(
     *,
     base_suite: EvaluationSuite,
@@ -424,6 +829,11 @@ def get_phase1_models_ordered_by_accuracy(phase1_dir: str | Path) -> List[str]:
     `run_meta.json`), return model ids ordered by accuracy (highest to lowest).
 
     This is intended for automatically constructing Phase 2's ladder ordering from Phase 1 results.
+
+    If the folder mixes legacy Phase 1 runs (``ablation.variant_id`` ``where_it_breaks_phase_1``)
+    with the well-defined variant (``where_it_breaks_phase_1_well_defined``), each ``run_meta.json``
+    is still read; the latest ``overall_accuracy`` per model wins. Prefer separate roots (e.g.
+    ``phase-1/`` vs ``phase-1-wd/``) when comparing modes.
     """
     phase1_root = Path(phase1_dir).resolve()
     phase1_metas = _load_run_metas_from_dir(phase1_root)
@@ -909,9 +1319,24 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--phase",
-        choices=["1", "2", "all"],
+        choices=["1", "1-wd", "2", "all"],
         default="all",
-        help="Which phase(s) to run.",
+        help=(
+            "Which phase(s): 1=legacy full pipeline, 1-wd=NL→symbol well-defined + TC repair, "
+            "2=staircase, all=legacy phase 1 then phase 2 (not 1-wd)."
+        ),
+    )
+    p.add_argument(
+        "--tc-model",
+        type=str,
+        default=GPT_4_1_MINI,
+        help="OpenRouter model id for WIB Phase 1 termination repair (--phase 1-wd only).",
+    )
+    p.add_argument(
+        "--tc-n-candidates",
+        type=int,
+        default=5,
+        help="Max distinct linking-rule candidates from the termination repair LLM (1-wd only).",
     )
     p.add_argument(
         "--phase2-reuse-run-dir",
@@ -1018,6 +1443,7 @@ if __name__ == "__main__":
     )
 
     phase1_root = _ensure_dir(where_root / "phase-1")
+    phase1_wd_root = _ensure_dir(where_root / "phase-1-wd")
     phase2_root = _ensure_dir(where_root / "phase-2")
     (where_root / "README.json").write_text(
         json.dumps(
@@ -1025,6 +1451,7 @@ if __name__ == "__main__":
                 "analysis": "where-it-breaks",
                 "layout": {
                     "phase-1": str(phase1_root),
+                    "phase-1-wd": str(phase1_wd_root),
                     "phase-2": str(phase2_root),
                 },
             },
@@ -1040,6 +1467,20 @@ if __name__ == "__main__":
             base_suite=base_suite,
             ladder_specs=ladder_specs,
             artifacts_root=phase1_root,
+            write_failures=write_failures,
+            max_in_flight=args.max_in_flight,
+        )
+    if args.phase == "1-wd":
+        run_where_it_breaks_phase_1_well_defined_symbol(
+            base_suite=base_suite,
+            ladder_specs=ladder_specs,
+            artifacts_root=phase1_wd_root,
+            termination_checker_spec=ModelSpec(
+                model=args.tc_model,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+            ),
+            max_tc_candidates=args.tc_n_candidates,
             write_failures=write_failures,
             max_in_flight=args.max_in_flight,
         )

@@ -8,11 +8,21 @@ from typing import Any, Dict, List, Optional
 
 from .llm_client.llm_client import LLMClient
 from .llm_executor import LLMExecutor
-from .symbolic.types import AnswerSpec, Premise, SelectorDecision, render_premises
-from .system_prompts import TERMINATION_CHECK_SYSTEM_PROMPT, _build_selector_system_prompt
+from .symbolic.types import AnswerSpec, Premise, Rule, SelectorDecision, parse_fact_or_rule, render_premises
+from .system_prompts import (
+    TERMINATION_CHECK_SYSTEM_PROMPT,
+    WIB_PHASE_1_TERMINATION_CHECK_SYSTEM_PROMPT,
+    _build_selector_system_prompt,
+)
 
 
 PREMISE_RENDER_VERBOSITY = 2
+
+# Premises proposed by the where-it-breaks Phase 1 (well-defined) termination repair LLM.
+WIB_PHASE_1_TERMINATION_CHECKER_SOURCE = "wib-phase-1-termination-checker"
+
+# Trace dict "component" for llm_interactions / artifact samples.
+WIB_PHASE_1_TERMINATION_TRACE_COMPONENT = "wib_phase_1_termination_check"
 
 
 @dataclass
@@ -618,4 +628,144 @@ async def check_termination_async(
         "parsed_answer": parsed,
     }
     return _termination_checker_decision_from_data(parsed), trace
+
+
+def _find_premise_by_id_local(premises: List[Premise], pid: int) -> Optional[Premise]:
+    for p in premises:
+        if p.id == pid:
+            return p
+    return None
+
+
+def _build_wib_phase_1_termination_user_content(
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    *,
+    max_candidates: int,
+) -> str:
+    premises_block = render_premises(premises, verbosity_level=PREMISE_RENDER_VERBOSITY)
+    return (
+        "Problem:\n"
+        f"{problem.strip()}\n\n"
+        "Current premises (by ID), including facts and rules:\n"
+        f"{premises_block}\n\n"
+        "Target answer head predicate:\n"
+        f"{answer_spec.target}\n\n"
+        f"Propose up to {int(max_candidates)} distinct candidate linking rules in JSON "
+        '(see system instructions). Use "candidates" as the only top-level key.'
+    )
+
+
+def wib_phase_1_auxiliary_premises_from_response(
+    parsed: Dict[str, Any],
+    premises: List[Premise],
+    *,
+    max_candidates: int,
+) -> List[Premise]:
+    """
+    Turn LLM JSON into auxiliary ``Premise`` rules (source
+    ``WIB_PHASE_1_TERMINATION_CHECKER_SOURCE``), in order, deduplicated.
+    """
+    raw_list = parsed.get("candidates")
+    if not isinstance(raw_list, list):
+        raw_list = []
+
+    next_id = max((p.id for p in premises), default=0) + 1
+    out: List[Premise] = []
+    seen: set[tuple[int, str]] = set()
+
+    for item in raw_list:
+        if len(out) >= int(max_candidates):
+            break
+        if not isinstance(item, dict):
+            continue
+        sid_raw = item.get("solution_premise_id")
+        rule_raw = item.get("answer_link_rule")
+        try:
+            sid = int(sid_raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(rule_raw, str):
+            continue
+        rule_s = rule_raw.strip()
+        if not rule_s:
+            continue
+
+        key = (sid, rule_s.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        anchor = _find_premise_by_id_local(premises, sid)
+        if anchor is None:
+            continue
+
+        try:
+            clause = parse_fact_or_rule(rule_s)
+        except Exception:
+            continue
+        if not isinstance(clause, Rule):
+            continue
+
+        out.append(
+            Premise(
+                id=next_id,
+                clause=clause,
+                nl=None,
+                source=WIB_PHASE_1_TERMINATION_CHECKER_SOURCE,
+                parent_ids=[sid],
+            )
+        )
+        next_id += 1
+
+    return out
+
+
+async def check_wib_phase_1_termination_async(
+    problem: str,
+    premises: List[Premise],
+    answer_spec: AnswerSpec,
+    *,
+    llm_exec: LLMExecutor,
+    max_candidates: int = 5,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    system_prompt_override: str | None = None,
+) -> tuple[List[Premise], Dict[str, Any]]:
+    """
+    Where-it-breaks Phase 1: ask for up to ``max_candidates`` linking-rule premises to repair
+    NL→symbol theories that fail the SWI well-defined check.
+
+    Returns (auxiliary_premises_in_try_order, trace_dict).
+    """
+    user_content = _build_wib_phase_1_termination_user_content(
+        problem=problem,
+        premises=premises,
+        answer_spec=answer_spec,
+        max_candidates=max_candidates,
+    )
+    system_prompt = system_prompt_override or WIB_PHASE_1_TERMINATION_CHECK_SYSTEM_PROMPT
+    parsed, raw = await llm_exec.generate_json(
+        system_prompt,
+        user_content,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        return_raw=True,
+    )
+    aux = wib_phase_1_auxiliary_premises_from_response(
+        parsed,
+        premises,
+        max_candidates=max_candidates,
+    )
+    trace = {
+        "component": WIB_PHASE_1_TERMINATION_TRACE_COMPONENT,
+        "system_prompt": system_prompt,
+        "user_prompt": user_content,
+        "raw_answer": raw,
+        "parsed_answer": parsed,
+    }
+    return aux, trace
 

@@ -212,6 +212,33 @@ Rules:
 - Do not add a trailing period to the rule string.
 """
 
+WIB_PHASE_1_TERMINATION_CHECK_SYSTEM_PROMPT = """
+You are a termination checker for a symbolic (Prolog-like) reasoning system.
+
+Given:
+- A natural language problem.
+- A set of Prolog-style premises with IDs.
+- The target answer head predicate we ultimately want to prove.
+
+Your job:
+- Examine every premise: ground facts, and the **heads** of rules.
+- Propose N **distinct** candidate "solution anchors": premises whose fact or rule head
+  predicate should link to the answer head via a single Prolog rule.
+- Prefer candidates most likely to make the correct result derivable from the answer head.
+- For each anchor, output one linking rule of the form:
+  <answer_head>(<AnswerVar>) :- <one body atom referring to that anchor's predicate and containing AnswerVar>,
+  , without trailing period.
+- The answer head MUST use the same predicate name and constants as the provided
+  answer head predicate, with one variable for the answer value.
+
+N is given in the user message.
+
+Output MUST be a single JSON with:
+- "candidates": a list of objects, each with:
+  - "solution_premise_id": integer ID of an existing premise anchoring the answer
+  - "answer_link_rule": string, Prolog rule without trailing period, head = answer head predicate
+"""
+
 SELECTOR_MULTI_CANDIDATE_SECTION = """
 - Generate multiple distinct candidate next steps in decreasing order of likelihood.
 - Each candidate represents ONE planned inference attempt and must include:
@@ -354,6 +381,7 @@ SYSTEM_PROMPTS_BY_NAME: Dict[str, str] = {
     "selector_with_termination_checks_no_background_multi_candidate": SELECTOR_SYSTEM_PROMPT_WITH_TERMINATION_CHECKS_NO_BACKGROUND_MULTI_CANDIDATE,
     "symbol_to_nl": SYMBOL_TO_NL_SYSTEM_PROMPT,
     "final_termination_check": TERMINATION_CHECK_SYSTEM_PROMPT,
+    "wib_phase_1_termination_check": WIB_PHASE_1_TERMINATION_CHECK_SYSTEM_PROMPT,
     "cot_solver_plain": COT_SOLVER_SYSTEM_PROMPT,
     "cot_solver_fewshot": _build_wei_table20_math_word_problem_prompt(problem="__PROBLEM_INSERTED_HERE__"),
     "cot_wei_table20_user_prefix": WEI_TABLE20_MATH_WORD_PROBLEM_PROMPT_PREFIX,
