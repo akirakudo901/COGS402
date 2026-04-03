@@ -4,13 +4,19 @@ Where-it-breaks experiment scaffolding (step 3e).
 This module encodes variant generation for the staircase protocol and documents
 what downstream analysis should read from persisted artifacts.
 
-Phase 1 has two modes:
+Phase 1 has three modes:
 - ``run_where_it_breaks_phase_1`` — full symbolic-hybrid pipeline per ladder model (legacy).
 - ``run_where_it_breaks_phase_1_well_defined_symbol`` — NL→symbol only per model, SWI
   well-defined check (``nl_symbol_conversion_assess``), optional LLM termination repair
   (``check_wib_phase_1_termination_async`` in ``llm_prolog.selector``), then persist.
   Use a dedicated ``artifacts_root`` subdirectory (e.g. ``phase-1-wd/``) or filter
   ``run_meta.ablation.variant_id`` when ranking so results do not mix with legacy Phase 1.
+- ``run_where_it_breaks_phase_1_wd_reanalyze_from_stored_run`` (offline) — load
+  ``examples.jsonl`` + ``run_meta.json`` from an existing run directory, re-run the
+  well-defined SWI check using ``initial_premises_for_hybrid_reuse_from_stored_result``
+  (same seeding as symbolic-hybrid reuse), and write metrics under a new directory.
+  ``run_where_it_breaks_phase_1_wd_reanalyze_under_parent`` walks subdirectories that
+  contain ``examples.jsonl`` and writes one artifact tree each (paths mirror the source layout).
 
 Logged / persisted per run (see eval.artifact):
 - run_meta.json: run_id, pipeline_mode, dataset (subset_spec incl. example_ids), pipeline_config,
@@ -70,6 +76,8 @@ from eval.eval_suite import (
 from eval.metrics.well_defined_nl_symbol import (
     NlSymbolWellDefinedOutcome,
     nl_symbol_conversion_assess,
+    summarize_well_defined_nl_symbol_metrics,
+    well_defined_nl_symbol_summary_to_jsonable,
 )
 from llm_prolog.llm_client.async_llm_client import AsyncLLMClient
 from llm_prolog.llm_executor import LLMExecutor
@@ -267,6 +275,123 @@ def load_symbolic_hybrid_initial_state_from_run_dir(
     if not out:
         raise ValueError(f"No examples loaded from {ex_path}")
     return out, run_meta
+
+
+def nl_to_symbol_model_id_from_run_meta(run_meta: Mapping[str, Any]) -> str | None:
+    """Best-effort NL→symbol model id from persisted ``run_meta.json`` (matches Phase 1 / reuse helpers)."""
+    d = ((run_meta.get("model_specs_by_role") or {}).get("nl_to_symbol")) or {}
+    m = d.get("model")
+    if m:
+        return str(m)
+    co = (run_meta.get("ablation") or {}).get("component_overrides") or {}
+    ar = co.get("all_roles")
+    return str(ar) if ar else None
+
+
+def run_where_it_breaks_phase_1_wd_reanalyze_from_stored_run(
+    *,
+    source_run_dir: str | Path,
+    output_dir: str | Path,
+) -> Path:
+    """
+    Offline Phase‑1‑style well-defined check: read ``examples.jsonl`` from ``source_run_dir``,
+    score each row with ``initial_premises_for_hybrid_reuse_from_stored_result`` semantics
+    (``initial_premises_for_hybrid_reuse_from_stored_result``), and write JSON artifacts
+    to ``output_dir``. Copies ``run_meta.json`` for provenance and records the NL→symbol model
+    from that file.
+    """
+    src = Path(source_run_dir).resolve()
+    out = _ensure_dir(Path(output_dir).resolve())
+    meta_path = src / "run_meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"run_meta.json not found under {src}")
+    ex_path = src / "examples.jsonl"
+    if not ex_path.is_file():
+        raise FileNotFoundError(f"examples.jsonl not found under {src}")
+
+    run_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    summary = summarize_well_defined_nl_symbol_metrics(src)
+    nl_model = nl_to_symbol_model_id_from_run_meta(run_meta)
+    payload = {
+        "analysis": "where_it_breaks_phase_1_wd_reanalyze_hybrid_initial",
+        "source_run_dir": str(src),
+        "nl_to_symbol_model_from_run_meta": nl_model,
+        "run_id": run_meta.get("run_id"),
+        "summary": well_defined_nl_symbol_summary_to_jsonable(summary),
+    }
+    (out / "well_defined_hybrid_initial_summary.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (out / "run_meta_source.json").write_text(
+        json.dumps(run_meta, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Wrote hybrid-initial well-defined reanalysis to {out}")
+    return out
+
+
+def discover_run_dirs_with_examples_jsonl(
+    parent_dir: str | Path,
+    *,
+    recursive: bool = True,
+) -> List[Path]:
+    """
+    Return directories under ``parent_dir`` that contain ``examples.jsonl``.
+
+    If ``recursive`` is False, only immediate subdirectories are considered.
+    If True, every directory that contains ``examples.jsonl`` anywhere under ``parent_dir``
+    is returned (including ``parent_dir`` itself when applicable), sorted by path.
+    """
+    parent = Path(parent_dir).resolve()
+    if not parent.is_dir():
+        raise NotADirectoryError(str(parent))
+    found: List[Path] = []
+    if recursive:
+        for ex in sorted(parent.rglob("examples.jsonl")):
+            found.append(ex.parent)
+    else:
+        for child in sorted(parent.iterdir()):
+            if child.is_dir() and (child / "examples.jsonl").is_file():
+                found.append(child)
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    uniq: List[Path] = []
+    for p in found:
+        key = str(p.resolve())
+        if key not in seen:
+            seen.add(key)
+            uniq.append(p)
+    return uniq
+
+
+def run_where_it_breaks_phase_1_wd_reanalyze_under_parent(
+    *,
+    source_runs_parent: str | Path,
+    output_parent: str | Path,
+    recursive: bool = True,
+) -> List[Path]:
+    """
+    For each directory under ``source_runs_parent`` that contains ``examples.jsonl``, run
+    :func:`run_where_it_breaks_phase_1_wd_reanalyze_from_stored_run` and write under
+    ``output_parent`` preserving relative paths (e.g. ``phase-1-wd/run_.../`` → same shape).
+    """
+    parent = Path(source_runs_parent).resolve()
+    out_root = _ensure_dir(Path(output_parent).resolve())
+    run_dirs = discover_run_dirs_with_examples_jsonl(parent, recursive=recursive)
+    if not run_dirs:
+        raise ValueError(f"No examples.jsonl found under {parent} (recursive={recursive})")
+    written: List[Path] = []
+    for run_dir in run_dirs:
+        rel = run_dir.relative_to(parent)
+        out = out_root / rel
+        written.append(
+            run_where_it_breaks_phase_1_wd_reanalyze_from_stored_run(
+                source_run_dir=run_dir,
+                output_dir=out,
+            )
+        )
+    return written
 
 
 def _validate_seeds_cover_suite_tasks(
@@ -1319,11 +1444,13 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--phase",
-        choices=["1", "1-wd", "2", "all"],
+        choices=["1", "1-wd", "2", "all", "1-wd-reanalyze", "1-wd-reanalyze-batch"],
         default="all",
         help=(
             "Which phase(s): 1=legacy full pipeline, 1-wd=NL→symbol well-defined + TC repair, "
-            "2=staircase, all=legacy phase 1 then phase 2 (not 1-wd)."
+            "2=staircase, all=legacy phase 1 then phase 2 (not 1-wd). "
+            "1-wd-reanalyze=offline SWI well-defined on hybrid-initial premises from one run dir; "
+            "1-wd-reanalyze-batch=same for every subdirectory (see --reanalyze-non-recursive) with examples.jsonl."
         ),
     )
     p.add_argument(
@@ -1350,14 +1477,19 @@ if __name__ == "__main__":
     p.add_argument(
         "--models",
         type=str,
-        required=True,
-        help="Comma-separated ordered model ids (best first). Used for Phase 1 ranking and Phase 2 ladder.",
+        default=None,
+        help="Comma-separated ordered model ids (best first). Required for phases 1, 1-wd, 2, all.",
     )
     p.add_argument("--temperature", type=float, default=0.5)
     p.add_argument("--max-tokens", type=int, default=None)
     p.add_argument("--no-failures", action="store_true", help="Do not write failures.jsonl.")
     p.add_argument("--max-in-flight", type=int, default=15)
-    p.add_argument("--gsm8k-size", type=int, required=True, help="How many GSM8K examples to evaluate.")
+    p.add_argument(
+        "--gsm8k-size",
+        type=int,
+        default=None,
+        help="How many GSM8K examples to evaluate (required for phases 1, 1-wd, 2, all).",
+    )
     p.add_argument("--gsm8k-seed", type=int, default=42)
     p.add_argument("--gsm8k-train", action="store_true", help="Use GSM8K train split (default).")
     p.add_argument("--gsm8k-test", action="store_true", help="Use GSM8K test split.")
@@ -1377,9 +1509,61 @@ if __name__ == "__main__":
         action="store_true",
         help="Generate plots without opening an interactive window.",
     )
+    p.add_argument(
+        "--source-run-dir",
+        type=Path,
+        default=None,
+        help="Existing evaluation run directory with run_meta.json + examples.jsonl (--phase 1-wd-reanalyze).",
+    )
+    p.add_argument(
+        "--reanalyze-output-dir",
+        type=Path,
+        default=None,
+        help="Directory to write well_defined_hybrid_initial_summary.json and run_meta_source.json.",
+    )
+    p.add_argument(
+        "--source-runs-parent",
+        type=Path,
+        default=None,
+        help="Root to scan for run directories containing examples.jsonl (--phase 1-wd-reanalyze-batch).",
+    )
+    p.add_argument(
+        "--reanalyze-output-parent",
+        type=Path,
+        default=None,
+        help="Root under which to mirror each run's reanalysis output (--phase 1-wd-reanalyze-batch).",
+    )
+    p.add_argument(
+        "--reanalyze-non-recursive",
+        action="store_true",
+        help="Batch mode: only immediate subdirectories of --source-runs-parent (default is recursive).",
+    )
     args = p.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
+
+    if args.phase in ("1-wd-reanalyze", "1-wd-reanalyze-batch"):
+        if args.phase == "1-wd-reanalyze":
+            if args.source_run_dir is None or args.reanalyze_output_dir is None:
+                raise SystemExit(
+                    "--phase 1-wd-reanalyze requires --source-run-dir and --reanalyze-output-dir"
+                )
+            run_where_it_breaks_phase_1_wd_reanalyze_from_stored_run(
+                source_run_dir=args.source_run_dir,
+                output_dir=args.reanalyze_output_dir,
+            )
+        else:
+            if args.source_runs_parent is None or args.reanalyze_output_parent is None:
+                raise SystemExit(
+                    "--phase 1-wd-reanalyze-batch requires --source-runs-parent and --reanalyze-output-parent"
+                )
+            run_where_it_breaks_phase_1_wd_reanalyze_under_parent(
+                source_runs_parent=args.source_runs_parent,
+                output_parent=args.reanalyze_output_parent,
+                recursive=not args.reanalyze_non_recursive,
+            )
+        raise SystemExit(0)
+
     where_root = args.artifacts_dir.resolve() if args.artifacts_dir else _default_where_it_breaks_root(project_root)
 
     if args.analyze_only:
@@ -1389,6 +1573,15 @@ if __name__ == "__main__":
             save_dir=args.analysis_save_dir,
         )
         raise SystemExit(0)
+
+    if args.gsm8k_size is None:
+        raise SystemExit(
+            "--gsm8k-size is required for this phase (or use --analyze-only / 1-wd-reanalyze / 1-wd-reanalyze-batch)."
+        )
+    if not args.models:
+        raise SystemExit(
+            "--models is required for this phase (or use --analyze-only / 1-wd-reanalyze / 1-wd-reanalyze-batch)."
+        )
 
     # Import here to avoid forcing dataset deps on module import.
     from eval.per_dataset.eval_gsm8k import (

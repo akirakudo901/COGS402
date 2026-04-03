@@ -591,6 +591,37 @@ def summarize_well_defined_nl_symbol_metrics(
         per_example_well_defined_outcomes=tuple(per_example_outcomes),
     )
 
+def well_defined_nl_symbol_summary_to_jsonable(summary: WellDefinedNlSymbolSummary) -> Dict[str, Any]:
+    """Serialize ``WellDefinedNlSymbolSummary`` for JSON (nested outcomes as plain dicts)."""
+
+    def _o(o: NlSymbolWellDefinedOutcome) -> Dict[str, Any]:
+        return {
+            "ok": o.ok,
+            "category": o.category.value,
+            "detail": o.detail,
+            "message": o.message,
+        }
+
+    per_ex = [
+        {"example_id": eid, "outcome": _o(out)}
+        for eid, out in summary.per_example_well_defined_outcomes
+    ]
+    d: Dict[str, Any] = {
+        "total_rows": summary.total_rows,
+        "symbolic_hybrid_rows": summary.symbolic_hybrid_rows,
+        "skipped_rows": summary.skipped_rows,
+        "well_defined_count": summary.well_defined_count,
+        "not_well_defined_count": summary.not_well_defined_count,
+        "failed_under_well_defined_symbols_count": summary.failed_under_well_defined_symbols_count,
+        "prolog_unavailable": summary.prolog_unavailable,
+        "final_termination_checker_premise_rows": summary.final_termination_checker_premise_rows,
+        "well_defined_only_after_including_ftc_premise_count": summary.well_defined_only_after_including_ftc_premise_count,
+        "well_defined_check_outcome_counts": dict(summary.well_defined_check_outcome_counts),
+        "per_example": per_ex,
+    }
+    return d
+
+
 if __name__ == "__main__":
     from pathlib import Path
 
