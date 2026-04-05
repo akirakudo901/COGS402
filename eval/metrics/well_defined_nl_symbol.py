@@ -251,6 +251,8 @@ class NlSymbolWellDefinedOutcome:
     category: WellDefinedFailureCategory
     detail: str | None
     message: str | None
+    #: Normalized unique answer from Prolog when there is exactly one distinct binding.
+    obtained_answer: str | None = None
 
 
 _SWIPL_ERROR_FUNCTOR_RE = re.compile(
@@ -344,6 +346,7 @@ def nl_symbol_conversion_assess(
             category=WellDefinedFailureCategory.PROLOG_UNAVAILABLE,
             detail=None,
             message="pyswip Prolog unavailable",
+            obtained_answer=None,
         )
 
     texts = [_clause_to_swipl_clause_text(p.clause) for p in initial_premises]
@@ -365,7 +368,9 @@ def nl_symbol_conversion_assess(
         solutions = list(prolog.query(timed_goal, maxresult=_MAX_ANSWER_BINDINGS + 1))
     except Exception as e:
         cat, detail = classify_swipl_pyswip_exception(e)
-        return NlSymbolWellDefinedOutcome(ok=False, category=cat, detail=detail, message=str(e))
+        return NlSymbolWellDefinedOutcome(
+            ok=False, category=cat, detail=detail, message=str(e), obtained_answer=None
+        )
     finally:
         for clause_text in reversed(assert_stack):
             _pyswip_retract_clause(prolog, clause_text)
@@ -376,6 +381,7 @@ def nl_symbol_conversion_assess(
             category=WellDefinedFailureCategory.NO_SOLUTION,
             detail=None,
             message="zero solutions",
+            obtained_answer=None,
         )
     if len(solutions) > _MAX_ANSWER_BINDINGS:
         return NlSymbolWellDefinedOutcome(
@@ -383,6 +389,7 @@ def nl_symbol_conversion_assess(
             category=WellDefinedFailureCategory.TOO_MANY_BINDINGS,
             detail=str(len(solutions)),
             message=f"len(solutions)>{_MAX_ANSWER_BINDINGS}",
+            obtained_answer=None,
         )
 
     distinct: Set[str] = set()
@@ -394,6 +401,7 @@ def nl_symbol_conversion_assess(
                 category=WellDefinedFailureCategory.VARIABLE_UNBOUND_IN_BINDING,
                 detail=var_name,
                 message=str(sol),
+                obtained_answer=None,
             )
         distinct.add(_normalize_answer_string(raw))
 
@@ -403,6 +411,7 @@ def nl_symbol_conversion_assess(
             category=WellDefinedFailureCategory.NON_UNIQUE_ANSWER,
             detail=repr(sorted(distinct)),
             message=None,
+            obtained_answer=None,
         )
 
     only = next(iter(distinct))
@@ -412,12 +421,14 @@ def nl_symbol_conversion_assess(
             category=WellDefinedFailureCategory.SUCCESS,
             detail=None,
             message=None,
+            obtained_answer=only,
         )
     return NlSymbolWellDefinedOutcome(
         ok=False,
         category=WellDefinedFailureCategory.WRONG_ANSWER_VS_GROUND_TRUTH,
         detail=f"got={only!r} expected={ground_truth!r}",
         message=None,
+        obtained_answer=only,
     )
 
 
@@ -595,12 +606,15 @@ def well_defined_nl_symbol_summary_to_jsonable(summary: WellDefinedNlSymbolSumma
     """Serialize ``WellDefinedNlSymbolSummary`` for JSON (nested outcomes as plain dicts)."""
 
     def _o(o: NlSymbolWellDefinedOutcome) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "ok": o.ok,
             "category": o.category.value,
             "detail": o.detail,
             "message": o.message,
         }
+        if o.obtained_answer is not None:
+            d["obtained_answer"] = o.obtained_answer
+        return d
 
     per_ex = [
         {"example_id": eid, "outcome": _o(out)}
